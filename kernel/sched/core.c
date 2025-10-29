@@ -9708,6 +9708,32 @@ static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)
 	scx_cgroup_cancel_attach(tset);
 }
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+static int cpu_tg_runtime_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, s64 val)
+{
+	return sched_group_set_tg_runtime(css_tg(css), val);
+}
+
+static s64 cpu_tg_runtime_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_tg_runtime(css_tg(css));
+}
+
+static int cpu_tg_period_write_uint(struct cgroup_subsys_state *css,
+				    struct cftype *cftype, u64 rt_period_us)
+{
+	return sched_group_set_tg_period(css_tg(css), rt_period_us);
+}
+
+static u64 cpu_tg_period_read_uint(struct cgroup_subsys_state *css,
+				   struct cftype *cft)
+{
+	return sched_group_tg_period(css_tg(css));
+}
+#endif /* CONFIG_TG_BANDWIDTH_SERVER */
+
 #ifdef CONFIG_UCLAMP_TASK_GROUP
 static void cpu_util_update_eff(struct cgroup_subsys_state *css)
 {
@@ -10607,6 +10633,20 @@ static ssize_t cpu_max_write(struct kernfs_open_file *of,
 #endif /* CONFIG_CFS_BANDWIDTH */
 
 static struct cftype cpu_files[] = {
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	{
+		.name = "runtime_us",
+		// .flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_tg_runtime_read,
+		.write_s64 = cpu_tg_runtime_write,
+	},
+	{
+		.name = "period_us",
+		// .flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_tg_period_read_uint,
+		.write_u64 = cpu_tg_period_write_uint,
+	},
+#endif
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
 	{
 		.name = "weight",
