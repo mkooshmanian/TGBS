@@ -3359,6 +3359,11 @@ static void __dl_clear_params(struct sched_dl_entity *dl_se)
 	dl_se->dl_overrun		= 0;
 	dl_se->dl_server		= 0;
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	dl_se->parent			= NULL;
+	dl_se->tg				= NULL;
+#endif
+
 #ifdef CONFIG_RT_MUTEXES
 	dl_se->pi_se			= dl_se;
 #endif

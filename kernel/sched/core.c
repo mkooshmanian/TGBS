@@ -8687,6 +8687,9 @@ void __init sched_init(void)
 
 	wait_bit_init();
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	ptr += nr_cpu_ids * sizeof(void **);
+#endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	ptr += 2 * nr_cpu_ids * sizeof(void **);
 #endif
@@ -8696,6 +8699,10 @@ void __init sched_init(void)
 	if (ptr) {
 		ptr = (unsigned long)kzalloc(ptr, GFP_NOWAIT);
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		root_task_group.tg_server = (struct sched_dl_entity **)ptr;
+		ptr += nr_cpu_ids * sizeof(void **);
+#endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.se = (struct sched_entity **)ptr;
 		ptr += nr_cpu_ids * sizeof(void **);
@@ -8720,6 +8727,11 @@ void __init sched_init(void)
 	}
 
 	init_defrootdomain();
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+ 	// Initialises root bandwith with a 0s runtime and an arbitrary 1s period
+	init_tg_bandwidth(&root_task_group.tg_bandwidth, 1 * NSEC_PER_SEC, 0);
+#endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
@@ -8746,6 +8758,10 @@ void __init sched_init(void)
 		init_cfs_rq(&rq->cfs);
 		init_rt_rq(&rq->rt);
 		init_dl_rq(&rq->dl);
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		/* Root task group has no parent: keep entries NULL to stop traversal here. */
+		root_task_group.tg_server[i] = NULL;
+#endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
 		rq->tmp_alone_branch = &rq->leaf_cfs_rq_list;
@@ -9103,8 +9119,97 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
 #endif
 }
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+static struct task_struct *
+tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+{
+	/* TODO: implement actual selection for bandwidth servers. */
+	return NULL;
+}
+
+void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+		struct sched_dl_entity *server, int cpu,
+		struct sched_dl_entity *parent)
+{
+	server->tg = tg;
+	server->parent = parent;
+	tg->tg_server[cpu] = server;
+}
+
+void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
+{
+	raw_spin_lock_init(&dl_bw->dl_runtime_lock);
+	dl_bw->dl_period = period;
+	dl_bw->dl_runtime = runtime;
+}
+
+int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+{
+	int cpu;
+
+	tg->tg_server = kcalloc(nr_cpu_ids, sizeof(*tg->tg_server), GFP_KERNEL);
+	if (!tg->tg_server)
+		return -ENOMEM;
+
+	// Initialise the bandwidth with parent's period but a 0s runtime
+	init_tg_bandwidth(&tg->tg_bandwidth, parent->tg_bandwidth.dl_period, 0);
+
+	for_each_possible_cpu(cpu) {
+		struct sched_dl_entity *server;
+		struct rq *rq = cpu_rq(cpu);
+		struct sched_dl_entity *parent_server =
+			parent ? parent->tg_server[cpu] : NULL;
+
+		server = kzalloc_node(sizeof(*server), GFP_KERNEL, cpu_to_node(cpu));
+		if (!server)
+			goto err_free;
+
+		init_dl_entity(server);
+		server->dl_runtime = tg->tg_bandwidth.dl_runtime;
+		server->dl_period = tg->tg_bandwidth.dl_period;
+		server->dl_deadline = server->dl_period;
+		server->dl_bw = to_ratio(server->dl_period, server->dl_runtime);
+		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
+		server->dl_server = 1;
+
+		dl_server_init(server, rq, tg_bandwidth_server_pick_task);
+
+		init_tg_bandwidth_entry(tg, rq, server, cpu, parent_server);
+	}
+
+	return 1;
+
+err_free:
+	for_each_possible_cpu(cpu) {
+		kfree(tg->tg_server[cpu]);
+		tg->tg_server[cpu] = NULL;
+	}
+	kfree(tg->tg_server);
+	tg->tg_server = NULL;
+
+	return 0;
+}
+
+void free_tg_bandwidth_server(struct task_group *tg)
+{
+	int cpu;
+
+	if (!tg->tg_server)
+		return;
+
+	for_each_possible_cpu(cpu) {
+		kfree(tg->tg_server[cpu]);
+		tg->tg_server[cpu] = NULL;
+	}
+
+	kfree(tg->tg_server);
+	tg->tg_server = NULL;
+}
+#endif /* CONFIG_TG_BANDWIDTH_SERVER */
+
 static void sched_free_group(struct task_group *tg)
 {
+	free_tg_bandwidth_server(tg);
 	free_fair_sched_group(tg);
 	free_rt_sched_group(tg);
 	autogroup_free(tg);
@@ -9135,6 +9240,9 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg = kmem_cache_alloc(task_group_cache, GFP_KERNEL | __GFP_ZERO);
 	if (!tg)
 		return ERR_PTR(-ENOMEM);
+
+	if (!alloc_tg_bandwidth_server(tg, parent))
+		goto err;
 
 	if (!alloc_fair_sched_group(tg, parent))
 		goto err;

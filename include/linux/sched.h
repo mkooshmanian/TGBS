@@ -734,6 +734,11 @@ struct sched_dl_entity {
 	struct rq			*rq;
 	dl_server_pick_f		server_pick_task;
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct sched_dl_entity		*parent;
+	struct task_group		*tg;
+#endif
+
 #ifdef CONFIG_RT_MUTEXES
 	/*
 	 * Priority Inheritance. When a DEADLINE scheduling entity is boosted
