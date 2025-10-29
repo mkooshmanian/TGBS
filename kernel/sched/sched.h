@@ -310,6 +310,12 @@ struct rt_prio_array {
 	struct list_head queue[MAX_RT_PRIO];
 };
 
+struct dl_bandwidth {
+	raw_spinlock_t          dl_runtime_lock;
+	u64                     dl_runtime;
+	u64                     dl_period;
+};
+
 struct rt_bandwidth {
 	/* nests inside the rq lock: */
 	raw_spinlock_t		rt_runtime_lock;
@@ -471,6 +477,11 @@ struct cfs_bandwidth {
 struct task_group {
 	struct cgroup_subsys_state css;
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct sched_dl_entity **tg_server;
+	struct dl_bandwidth tg_bandwidth;
+#endif
+
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
 	/* A positive value indicates that this is a SCHED_IDLE group. */
 	int			idle;
@@ -560,6 +571,24 @@ static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
 }
 
 extern int tg_nop(struct task_group *tg, void *data);
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+		struct sched_dl_entity *server, int cpu,
+		struct sched_dl_entity *parent);
+extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
+
+extern void free_tg_bandwidth_server(struct task_group *tg);
+extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
+#else
+static inline void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+		struct sched_dl_entity *server, int cpu,
+		struct sched_dl_entity *parent) { }
+static inline void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime) { }
+
+static inline void free_tg_bandwidth_server(struct task_group *tg) { }
+static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
+#endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 extern void free_fair_sched_group(struct task_group *tg);
