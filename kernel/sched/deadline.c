@@ -215,8 +215,7 @@ __dl_overflow(struct dl_bw *dl_b, unsigned long cap, u64 old_bw, u64 new_bw)
 	u64 tg_servers_root = 0;
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
-	tg_servers_root = to_ratio(root_task_group.tg_bandwidth.dl_period,
-				  root_task_group.tg_bandwidth.dl_runtime);
+	tg_servers_root = tg_root_bandwidth_sum();
 #endif
 	return dl_b->bw != -1 &&
 	       cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw
@@ -3123,8 +3122,7 @@ int sched_dl_global_validate(void)
 	unsigned long flags;
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
-	tg_servers_root = to_ratio(root_task_group.tg_bandwidth.dl_period,
-				  root_task_group.tg_bandwidth.dl_runtime);
+	tg_servers_root = tg_root_bandwidth_sum();
 #endif
 
 	/*

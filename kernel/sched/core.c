@@ -9202,6 +9202,29 @@ static bool tg_has_tasks(struct task_group *tg, bool active_only)
 	return ret;
 }
 
+unsigned long tg_root_bandwidth_sum(void)
+{
+	struct task_group *child;
+	unsigned long sum = 0;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
+		u64 period = READ_ONCE(child->tg_bandwidth.dl_period);
+		u64 runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
+		unsigned long child_bw = to_ratio(period, runtime);
+
+		if (sum + child_bw < sum) {
+			sum = ULONG_MAX;
+			break;
+		}
+
+		sum += child_bw;
+	}
+	rcu_read_unlock();
+
+	return sum;
+}
+
 static struct task_struct *
 tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 {
@@ -9303,6 +9326,32 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
 	unsigned long total, sum = 0;
 	u64 period, runtime, cur_runtime;
 
+	if (tg == &root_task_group) {
+		list_for_each_entry_rcu(child, &tg->children, siblings) {
+			u64 child_period = READ_ONCE(child->tg_bandwidth.dl_period);
+			u64 child_runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
+			unsigned long child_bw;
+
+			if (child == d->tg) {
+				child_period = d->period;
+				child_runtime = d->runtime;
+			}
+
+			child_bw = to_ratio(child_period, child_runtime);
+			if (sum + child_bw < sum)
+				return -EINVAL;
+
+			sum += child_bw;
+			if (sum > BW_UNIT)
+				return -EINVAL;
+		}
+
+		if (!tg_check_root_dl_bandwidth(sum))
+			return -EBUSY;
+
+		return 0;
+	}
+
 	cur_runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
 	period = READ_ONCE(tg->tg_bandwidth.dl_period);
 	runtime = cur_runtime;
@@ -9342,9 +9391,6 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
 			return -EINVAL;
 	}
 
-	if (tg == &root_task_group && !tg_check_root_dl_bandwidth(total))
-		return -EBUSY;
-
 	return 0;
 }
 
@@ -9365,6 +9411,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
 	struct dl_bandwidth *dl_bw = &tg->tg_bandwidth;
 	unsigned long flags;
 	int ret;
+
+	if (tg == &root_task_group)
+		return -EPERM;
 
 	/* Disable when runtime is zero; otherwise require a valid period. */
 	if (runtime && !period)
@@ -10636,13 +10685,13 @@ static struct cftype cpu_files[] = {
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 	{
 		.name = "runtime_us",
-		// .flags = CFTYPE_NOT_ON_ROOT,
+		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_s64 = cpu_tg_runtime_read,
 		.write_s64 = cpu_tg_runtime_write,
 	},
 	{
 		.name = "period_us",
-		// .flags = CFTYPE_NOT_ON_ROOT,
+		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_u64 = cpu_tg_period_read_uint,
 		.write_u64 = cpu_tg_period_write_uint,
 	},
