@@ -577,6 +577,7 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
 		struct sched_dl_entity *server, int cpu,
 		struct sched_dl_entity *parent);
 extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
+extern unsigned long tg_root_bandwidth_sum(void);
 extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
 extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
 extern long sched_group_tg_runtime(struct task_group *tg);
