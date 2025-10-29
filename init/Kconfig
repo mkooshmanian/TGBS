@@ -1142,6 +1142,21 @@ config EXT_GROUP_SCHED
 	select GROUP_SCHED_BANDWIDTH
 	default y
 
+config TG_BANDWIDTH_SERVER
+	bool "Task group bandwidth server"
+	depends on CGROUP_SCHED && !RT_GROUP_SCHED && !FAIR_GROUP_SCHED && !SCHED_CLASS_EXT
+	default n
+	help
+	  Enable a per-task-group Constant Bandwidth Server (CBS) to limit
+	  CPU bandwidth consumption of grouped tasks.
+	  This creates a deadline server at the task_group level which enforces
+	  a fixed runtime/period budget for all tasks in the group. When the
+	  group's runtime is exhausted, the entire group is throttled until the
+	  next replenishment period.
+	  Internally this relies on SCHED_DEADLINE mechanisms to implement
+	  the Constant Bandwidth Server logic at the cgroup/task_group scope
+	  rather than at per-task granularity.
+
 endif #CGROUP_SCHED
 
 config SCHED_MM_CID
