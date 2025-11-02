@@ -577,15 +577,14 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
 		struct sched_dl_entity *server, int cpu,
 		struct sched_dl_entity *parent);
 extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
+extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
+extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
+extern long sched_group_tg_runtime(struct task_group *tg);
+extern long sched_group_tg_period(struct task_group *tg);
 
 extern void free_tg_bandwidth_server(struct task_group *tg);
 extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
 #else
-static inline void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
-		struct sched_dl_entity *server, int cpu,
-		struct sched_dl_entity *parent) { }
-static inline void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime) { }
-
 static inline void free_tg_bandwidth_server(struct task_group *tg) { }
 static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
 #endif

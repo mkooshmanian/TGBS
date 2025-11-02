@@ -1383,7 +1383,7 @@ bool sched_can_stop_tick(struct rq *rq)
 }
 #endif /* CONFIG_NO_HZ_FULL */
 
-#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_FAIR_GROUP_SCHED)
+#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
 /*
  * Iterate task_group tree rooted at *from, calling @down when first entering a
  * node and @up when leaving it for the final time.
@@ -9120,6 +9120,88 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
 }
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+static u64 tg_bandwidth_visit_cookie;
+
+static bool tg_dl_bw_visited(struct root_domain *rd, u64 gen)
+{
+	if (READ_ONCE(rd->visit_cookie) == gen)
+		return true;
+
+	WRITE_ONCE(rd->visit_cookie, gen);
+	return false;
+}
+
+static int tg_dl_bw_cpus(struct root_domain *rd)
+{
+	if (cpumask_subset(rd->span, cpu_active_mask))
+		return cpumask_weight(rd->span);
+
+	return cpumask_weight_and(rd->span, cpu_active_mask);
+}
+
+static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+{
+	unsigned long flags;
+	int cpu;
+	u64 gen;
+
+	gen = ++tg_bandwidth_visit_cookie;
+
+	for_each_possible_cpu(cpu) {
+		struct rq *rq;
+		struct root_domain *rd;
+		struct dl_bw *dl_b;
+		int cpus;
+
+		rcu_read_lock_sched();
+
+		rq = cpu_rq(cpu);
+		rd = rq->rd;
+		if (!rd || tg_dl_bw_visited(rd, gen)) {
+			rcu_read_unlock_sched();
+			continue;
+		}
+
+		dl_b = &rd->dl_bw;
+		cpus = tg_dl_bw_cpus(rd);
+
+		raw_spin_lock_irqsave(&dl_b->lock, flags);
+		if (dl_b->bw != (u64)-1 &&
+		    dl_b->bw * cpus < dl_b->total_bw + (u64)total_bw * cpus) {
+			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+			rcu_read_unlock_sched();
+			return 0;
+		}
+		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+		rcu_read_unlock_sched();
+	}
+
+	return 1;
+}
+
+static bool tg_has_tasks(struct task_group *tg, bool active_only)
+{
+	struct css_task_iter it;
+	struct task_struct *task;
+	bool ret = false;
+
+	css_task_iter_start(&tg->css, 0, &it);
+	while ((task = css_task_iter_next(&it))) {
+		if (!active_only) {
+			ret = true;
+			break;
+		}
+
+		if (task_on_rq_queued(task) || task_is_running(task)) {
+			ret = true;
+			break;
+		}
+	}
+	css_task_iter_end(&it);
+
+	return ret;
+}
+
 static struct task_struct *
 tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 {
@@ -9204,6 +9286,153 @@ void free_tg_bandwidth_server(struct task_group *tg)
 
 	kfree(tg->tg_server);
 	tg->tg_server = NULL;
+}
+
+static DEFINE_MUTEX(tg_bandwidth_constraints_mutex);
+
+struct tg_bandwidth_schedulable_data {
+	struct task_group *tg;
+	u64 period;
+	u64 runtime;
+};
+
+static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+{
+	struct tg_bandwidth_schedulable_data *d = data;
+	struct task_group *child;
+	unsigned long total, sum = 0;
+	u64 period, runtime, cur_runtime;
+
+	cur_runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+	period = READ_ONCE(tg->tg_bandwidth.dl_period);
+	runtime = cur_runtime;
+
+	if (tg == d->tg) {
+		period = d->period;
+		runtime = d->runtime;
+	}
+
+	if (runtime > period && runtime != RUNTIME_INF)
+		return -EINVAL;
+
+	if (dl_bandwidth_enabled() && !runtime && cur_runtime &&
+	    tg_has_tasks(tg, false))
+		return -EBUSY;
+
+	total = to_ratio(period, runtime);
+	if (total > BW_UNIT)
+		return -EINVAL;
+
+	list_for_each_entry_rcu(child, &tg->children, siblings) {
+		u64 child_period = READ_ONCE(child->tg_bandwidth.dl_period);
+		u64 child_runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
+		unsigned long child_bw;
+
+		if (child == d->tg) {
+			child_period = d->period;
+			child_runtime = d->runtime;
+		}
+
+		child_bw = to_ratio(child_period, child_runtime);
+		if (sum + child_bw < sum)
+			return -EINVAL;
+
+		sum += child_bw;
+		if (sum > total)
+			return -EINVAL;
+	}
+
+	if (tg == &root_task_group && !tg_check_root_dl_bandwidth(total))
+		return -EBUSY;
+
+	return 0;
+}
+
+static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64 runtime)
+{
+	struct tg_bandwidth_schedulable_data data = {
+		.tg = tg,
+		.period = period,
+		.runtime = runtime,
+	};
+
+	guard(rcu)();
+	return walk_tg_tree(tg_check_dl_bandwidth_constraints, tg_nop, &data);
+}
+
+static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+{
+	struct dl_bandwidth *dl_bw = &tg->tg_bandwidth;
+	unsigned long flags;
+	int ret;
+
+	/* Disable when runtime is zero; otherwise require a valid period. */
+	if (runtime && !period)
+		return -EINVAL;
+
+	/* Bound runtime to the reservation window. */
+	if (period && runtime > period && runtime != RUNTIME_INF)
+		return -EINVAL;
+
+	guard(mutex)(&tg_bandwidth_constraints_mutex);
+
+	ret = tg_validate_dl_bandwidth_tree(tg, period, runtime);
+	if (ret)
+		return ret;
+
+	raw_spin_lock_irqsave(&dl_bw->dl_runtime_lock, flags);
+	dl_bw->dl_period = period;
+	dl_bw->dl_runtime = runtime;
+	raw_spin_unlock_irqrestore(&dl_bw->dl_runtime_lock, flags);
+
+	return ret;
+}
+
+int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us)
+{
+	u64 period, runtime;
+
+	if (runtime_us < 0)
+		runtime = 0;
+	else {
+		runtime = (u64)runtime_us;
+		if (runtime > U64_MAX / NSEC_PER_USEC)
+			return -EINVAL;
+		runtime *= NSEC_PER_USEC;
+	}
+
+	period = READ_ONCE(tg->tg_bandwidth.dl_period);
+
+	return tg_set_dl_bandwidth(tg, period, runtime);
+}
+
+long sched_group_tg_runtime(struct task_group *tg)
+{
+	u64 runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+
+	do_div(runtime, NSEC_PER_USEC);
+	return runtime;
+}
+
+int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
+{
+	u64 period, runtime;
+
+	if (period_us > U64_MAX / NSEC_PER_USEC)
+		return -EINVAL;
+
+	period = period_us * NSEC_PER_USEC;
+	runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+
+	return tg_set_dl_bandwidth(tg, period, runtime);
+}
+
+long sched_group_tg_period(struct task_group *tg)
+{
+	u64 period = READ_ONCE(tg->tg_bandwidth.dl_period);
+
+	do_div(period, NSEC_PER_USEC);
+	return period;
 }
 #endif /* CONFIG_TG_BANDWIDTH_SERVER */
 
