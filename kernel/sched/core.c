@@ -9179,7 +9179,7 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
 	return 1;
 }
 
-static bool tg_has_tasks(struct task_group *tg, bool active_only)
+bool tg_has_tasks(struct task_group *tg, bool active_only)
 {
 	struct css_task_iter it;
 	struct task_struct *task;
@@ -9298,11 +9298,29 @@ err_free:
 void free_tg_bandwidth_server(struct task_group *tg)
 {
 	int cpu;
+	unsigned long flags;
 
 	if (!tg->tg_server)
 		return;
 
 	for_each_possible_cpu(cpu) {
+		if (!tg->tg_server[cpu])
+			continue;
+
+		/*
+		 * Shutdown the dl_server and free it
+		 *
+		 * Since the dl timer is going to be cancelled,
+		 * we risk to never decrease the running bw...
+		 * Fix this issue by changing the group runtime
+		 * to 0 immediately before freeing it.
+		 */
+		if (tg->tg_server[cpu]->dl_runtime)
+			init_tg_dl_se(tg, cpu, 0, tg->tg_server[cpu]->dl_period);
+
+		raw_spin_rq_lock_irqsave(cpu_rq(cpu), flags);
+		hrtimer_cancel(&tg->tg_server[cpu]->dl_timer);
+		raw_spin_rq_unlock_irqrestore(cpu_rq(cpu), flags);
 		kfree(tg->tg_server[cpu]);
 		tg->tg_server[cpu] = NULL;
 	}
@@ -9410,7 +9428,7 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
 {
 	struct dl_bandwidth *dl_bw = &tg->tg_bandwidth;
 	unsigned long flags;
-	int ret;
+	int cpu, ret;
 
 	if (tg == &root_task_group)
 		return -EPERM;
@@ -9433,6 +9451,13 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
 	dl_bw->dl_period = period;
 	dl_bw->dl_runtime = runtime;
 	raw_spin_unlock_irqrestore(&dl_bw->dl_runtime_lock, flags);
+
+	if (tg == &root_task_group)
+		return 0;
+
+	for_each_possible_cpu(cpu) {
+		init_tg_dl_se(tg, cpu, runtime, period);
+	}
 
 	return ret;
 }

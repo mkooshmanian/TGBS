@@ -355,6 +355,102 @@ static void dl_change_utilization(struct task_struct *p, u64 new_bw)
 	dl_rq_change_utilization(task_rq(p), &p->dl, new_bw);
 }
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+static bool is_active_sched_group(struct task_group *tg)
+{
+	struct task_group *child;
+	bool is_active = 1;
+
+	// if there are no children, this is a leaf group, thus it is active
+	list_for_each_entry_rcu(child, &tg->children, siblings) {
+		if (child->tg_bandwidth.dl_runtime > 0) {
+			is_active = 0;
+		}
+	}
+	return is_active;
+}
+
+static bool sched_group_has_active_siblings(struct task_group *tg)
+{
+	struct task_group *sibling;
+	bool has_active = false;
+
+	if (!tg->parent)
+		return false;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(sibling, &tg->parent->children, siblings) {
+		if (sibling == tg)
+			continue;
+
+		if (READ_ONCE(sibling->tg_bandwidth.dl_runtime)) {
+			has_active = true;
+			break;
+		}
+	}
+	rcu_read_unlock();
+
+	return has_active;
+}
+
+void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+{
+	struct sched_dl_entity *dl_se;
+	struct rq *rq;
+	struct dl_rq *dl_rq;
+	struct sched_dl_entity *parent;
+	bool has_active_tasks, is_active_group;
+	u64 old_runtime;
+	unsigned long new_bw;
+
+	if (!tg->tg_server)
+		return;
+
+	dl_se = tg->tg_server[cpu];
+	if (!dl_se)
+		return;
+
+	rq = dl_se->rq;
+	dl_rq = dl_rq_of_se(dl_se);
+	is_active_group = is_active_sched_group(tg);
+	has_active_tasks = tg_has_tasks(tg, true);
+
+	raw_spin_rq_lock_irq(rq);
+	update_rq_clock(rq);
+	dl_server_stop(dl_se);
+
+	old_runtime = dl_se->dl_runtime;
+	new_bw = to_ratio(period, runtime);
+
+	if (is_active_group)
+		dl_rq_change_utilization(rq, dl_se, new_bw);
+
+	dl_se->dl_runtime = runtime;
+	dl_se->dl_deadline = period;
+	dl_se->dl_period = period;
+	dl_se->runtime = 0;
+	dl_se->deadline = 0;
+
+	dl_se->dl_bw = new_bw;
+	dl_se->dl_density = new_bw;
+
+	parent = dl_se->parent;
+	/* Root task group has no explicit server entry, skip parent bandwidth tweaks. */
+	if (tg->parent && tg->parent != &root_task_group && parent &&
+	    !sched_group_has_active_siblings(tg)) {
+		if (!runtime && old_runtime)
+			__add_rq_bw(parent->dl_bw, dl_rq);
+		else if (runtime && !old_runtime)
+			__sub_rq_bw(parent->dl_bw, dl_rq);
+	}
+
+	if (has_active_tasks)
+		dl_server_start(dl_se);
+
+	raw_spin_rq_unlock_irq(rq);
+}
+#endif
+
 static void __dl_clear_params(struct sched_dl_entity *dl_se);
 
 /*
