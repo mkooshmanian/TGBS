@@ -8931,6 +8931,23 @@ int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int 
 
 	return have_best ? best_cpu : cpu;
 }
+
+struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu)
+{
+	struct task_struct *p;
+
+	if (list_empty(&rq->cfs_tasks))
+		return NULL;
+
+	list_for_each_entry_reverse(p, &rq->cfs_tasks, se.group_node) {
+		if (!tg_vrq_can_migrate_task(rq, p, dst_cpu))
+			continue;
+
+		return p;
+	}
+
+	return NULL;
+}
 #endif
 
 static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)

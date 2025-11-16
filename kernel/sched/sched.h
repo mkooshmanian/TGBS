@@ -433,6 +433,11 @@ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
 extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
 extern void tg_server_handle_throttle(struct sched_dl_entity *server);
 extern void tg_server_handle_unthrottle(struct sched_dl_entity *server);
+extern struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu);
+extern struct task_struct *tg_server_pull_rt_task_from_cpu(struct rq *rq, int dst_cpu);
+extern struct task_struct *tg_server_pull_dl_task_from_cpu(struct rq *rq, int dst_cpu);
+extern bool tg_vrq_can_migrate_task(struct rq *src_rq, struct task_struct *p,
+				    int dst_cpu);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,

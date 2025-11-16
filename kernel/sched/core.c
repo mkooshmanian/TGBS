@@ -2161,6 +2161,9 @@ unsigned long get_wchan(struct task_struct *p)
 }
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+
+static inline bool is_cpu_allowed(struct task_struct *p, int cpu);
+
 static int tg_select_task_cpu(struct task_struct *p, int cpu)
 {
 	struct task_group *tg = task_group(p);
@@ -2177,6 +2180,76 @@ static int tg_select_task_cpu(struct task_struct *p, int cpu)
 		return tg_server_select_fair_cpu(p, tg, cpu);
 
 	return cpu;
+}
+
+static struct task_struct *
+tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
+{
+	struct task_struct *p;
+
+	p = tg_server_pull_dl_task_from_cpu(src_rq, dst_cpu);
+	if (p)
+		return p;
+
+	p = tg_server_pull_rt_task_from_cpu(src_rq, dst_cpu);
+	if (p)
+		return p;
+
+	return tg_server_pull_fair_task_from_cpu(src_rq, dst_cpu);
+}
+
+static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+{
+	int dst_cpu = cpu_of(dst_vrq);
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct sched_dl_entity *server;
+		struct rq *src_vrq;
+		struct rq *src_phys;
+		struct task_struct *p;
+
+		if (cpu == dst_cpu)
+			continue;
+
+		server = READ_ONCE(tg->tg_server[cpu]);
+		if (!server)
+			continue;
+
+		src_vrq = READ_ONCE(server->vrq);
+		if (!src_vrq)
+			continue;
+
+		src_phys = READ_ONCE(server->rq);
+		if (!src_phys)
+			continue;
+
+		if (!READ_ONCE(src_vrq->nr_running))
+			continue;
+
+		if (!raw_spin_rq_trylock(src_phys))
+			continue;
+
+		if (!raw_spin_rq_trylock(src_vrq))
+			goto unlock_phys;
+
+		p = tg_server_pull_task_from_cpu(src_vrq, dst_cpu);
+		if (p) {
+			update_rq_clock(src_vrq);
+			update_rq_clock(dst_vrq);
+
+			move_queued_task_locked(src_vrq, dst_vrq, p);
+		}
+
+		raw_spin_rq_unlock(src_vrq);
+unlock_phys:
+		raw_spin_rq_unlock(src_phys);
+
+		if (p)
+			return true;
+	}
+
+	return false;
 }
 
 void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
@@ -2231,7 +2304,12 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
 	BUG_ON(vrq != server->vrq);
 
 	if (!READ_ONCE(vrq->nr_running)) {
-		bool was_active = dl_server_active(server);
+		bool was_active;
+
+		if (tg_server_pull_task(tg, vrq))
+			return;
+
+		was_active = dl_server_active(server);
 
 		dl_server_stop(server);
 		if (was_active && !dl_server_active(server))
@@ -2240,6 +2318,31 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
 						   cpu,
 						   cgroup_id(tg->css.cgroup));
 	}
+}
+
+bool tg_vrq_can_migrate_task(struct rq *src_rq,
+				    struct task_struct *p, int dst_cpu)
+{
+	if (!p)
+		return false;
+
+	if (!is_cpu_allowed(p, dst_cpu))
+		return false;
+
+	if (is_migration_disabled(p))
+		return false;
+
+	if (!task_on_rq_queued(p))
+		return false;
+
+	/*
+	 * Do not attempt to move the task that is currently providing either
+	 * the scheduling or the execution context for this rq.
+	 */
+	if (task_current(src_rq, p) || task_current_donor(src_rq, p))
+		return false;
+
+	return true;
 }
 
 void tg_server_account_runtime(struct rq *rq,

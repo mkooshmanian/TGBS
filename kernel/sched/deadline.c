@@ -2765,6 +2765,35 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
 
 	return have_best ? best_cpu : cpu;
 }
+
+struct task_struct *tg_server_pull_dl_task_from_cpu(struct rq *rq, int dst_cpu)
+{
+	struct task_struct *p;
+	struct rb_node *node;
+
+	if (!has_pushable_dl_tasks(rq))
+		return NULL;
+
+	node = rb_first_cached(&rq->dl.pushable_dl_tasks_root);
+	while (node) {
+		p = __node_2_pdl(node);
+
+		if (!task_is_pushable(rq, p, dst_cpu))
+			goto next;
+
+		if (!dl_task_fits_capacity(p, dst_cpu))
+			goto next;
+
+		if (!tg_vrq_can_migrate_task(rq, p, dst_cpu))
+			goto next;
+
+		return p;
+next:
+		node = rb_next(node);
+	}
+
+	return NULL;
+}
 #endif
 
 static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
