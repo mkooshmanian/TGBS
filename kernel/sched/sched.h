@@ -551,6 +551,30 @@ struct task_group {
 
 };
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+extern int tg_server_select_dl_cpu(struct task_struct *p,
+				   struct task_group *tg, int cpu);
+extern int tg_server_select_fair_cpu(struct task_struct *p,
+				     struct task_group *tg, int cpu);
+extern int tg_server_select_rt_cpu(struct task_struct *p,
+				   struct task_group *tg, int cpu);
+
+#define TG_VRQ_ACTIVE_PENALTY		(1U << 20)
+#define TG_VRQ_THROTTLED_PENALTY	(1U << 22)
+
+static inline unsigned int tg_server_penalty(struct sched_dl_entity *server)
+{
+	unsigned int penalty = 0;
+
+	if (server->dl_throttled)
+		penalty += TG_VRQ_THROTTLED_PENALTY;
+	else if (dl_server_active(server))
+		penalty += TG_VRQ_ACTIVE_PENALTY;
+
+	return penalty;
+}
+#endif
+
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
 #define ROOT_TASK_GROUP_LOAD	NICE_0_LOAD
 
