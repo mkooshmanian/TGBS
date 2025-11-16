@@ -2373,8 +2373,24 @@ inline int task_curr(const struct task_struct *p)
 void check_class_changing(struct rq *rq, struct task_struct *p,
 			  const struct sched_class *prev_class)
 {
+	struct rq *class_rq = rq;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct rq_flags vrf = { };
+	bool locked = false;
+
+	class_rq = tg_server_rq_of_task(rq, p);
+	if (class_rq != rq) {
+		tg_server_vrq_lock(class_rq, &vrf);
+		locked = true;
+	}
+#endif
 	if (prev_class != p->sched_class && p->sched_class->switching_to)
-		p->sched_class->switching_to(rq, p);
+		p->sched_class->switching_to(class_rq, p);
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (locked)
+		tg_server_vrq_unlock(class_rq, &vrf);
+#endif
 }
 
 /*
@@ -2388,13 +2404,29 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
 			 const struct sched_class *prev_class,
 			 int oldprio)
 {
+	struct rq *class_rq = rq;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct rq_flags vrf = { };
+	bool locked = false;
+
+	class_rq = tg_server_rq_of_task(rq, p);
+	if (class_rq != rq) {
+		tg_server_vrq_lock(class_rq, &vrf);
+		locked = true;
+	}
+#endif
 	if (prev_class != p->sched_class) {
 		if (prev_class->switched_from)
-			prev_class->switched_from(rq, p);
+			prev_class->switched_from(class_rq, p);
 
-		p->sched_class->switched_to(rq, p);
+		p->sched_class->switched_to(class_rq, p);
 	} else if (oldprio != p->prio || dl_task(p))
-		p->sched_class->prio_changed(rq, p, oldprio);
+		p->sched_class->prio_changed(class_rq, p, oldprio);
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (locked)
+		tg_server_vrq_unlock(class_rq, &vrf);
+#endif
 }
 
 void wakeup_preempt(struct rq *rq, struct task_struct *p, int flags)
