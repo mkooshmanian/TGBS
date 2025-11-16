@@ -1819,6 +1819,27 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
 
 	return have_best ? best_cpu : cpu;
 }
+
+struct task_struct *tg_server_pull_rt_task_from_cpu(struct rq *rq, int dst_cpu)
+{
+	struct plist_head *head = &rq->rt.pushable_tasks;
+	struct task_struct *p;
+
+	if (plist_head_empty(head))
+		return NULL;
+
+	plist_for_each_entry(p, head, pushable_tasks) {
+		if (!task_is_pushable(rq, p, dst_cpu))
+			continue;
+
+		if (!tg_vrq_can_migrate_task(rq, p, dst_cpu))
+			continue;
+
+		return p;
+	}
+
+	return NULL;
+}
 #endif
 
 static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
