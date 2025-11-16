@@ -8899,6 +8899,38 @@ struct task_struct *tg_server_pick_fair_task(struct rq *rq)
 {
 	return pick_task_fair(rq);
 }
+
+int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int cpu)
+{
+	unsigned int best_score = UINT_MAX;
+	int best_cpu = cpu;
+	bool have_best = false;
+	int candidate;
+
+	for_each_cpu(candidate, p->cpus_ptr) {
+		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
+		struct rq *vrq;
+		unsigned int score;
+
+		if (!server)
+			continue;
+
+		vrq = READ_ONCE(server->vrq);
+		if (!vrq)
+			continue;
+
+		score = READ_ONCE(vrq->nr_running) + tg_server_penalty(server);
+
+		if (!have_best || score < best_score ||
+		    (score == best_score && candidate == cpu)) {
+			best_score = score;
+			best_cpu = candidate;
+			have_best = true;
+		}
+	}
+
+	return have_best ? best_cpu : cpu;
+}
 #endif
 
 static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)

@@ -1756,9 +1756,68 @@ static struct task_struct *pick_task_rt(struct rq *rq)
 }
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+
+#ifdef CONFIG_UCLAMP_TASK
+static inline bool tg_rt_task_fits_capacity(struct task_struct *p, int cpu)
+{
+	unsigned int min_cap;
+	unsigned int max_cap;
+	unsigned int cpu_cap;
+
+	if (!sched_asym_cpucap_active())
+		return true;
+
+	min_cap = uclamp_eff_value(p, UCLAMP_MIN);
+	max_cap = uclamp_eff_value(p, UCLAMP_MAX);
+	cpu_cap = arch_scale_cpu_capacity(cpu);
+
+	return cpu_cap >= min(min_cap, max_cap);
+}
+#else
+static inline bool tg_rt_task_fits_capacity(struct task_struct *p, int cpu)
+{
+	return true;
+}
+#endif
+
 struct task_struct *tg_server_pick_rt_task(struct rq *rq)
 {
 	return pick_task_rt(rq);
+}
+
+int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cpu)
+{
+	unsigned int best_score = UINT_MAX;
+	int best_cpu = cpu;
+	bool have_best = false;
+	int candidate;
+
+	for_each_cpu(candidate, p->cpus_ptr) {
+		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
+		struct rq *vrq;
+		unsigned int score;
+
+		if (!server)
+			continue;
+
+		if (!tg_rt_task_fits_capacity(p, candidate))
+			continue;
+
+		vrq = READ_ONCE(server->vrq);
+		if (!vrq)
+			continue;
+
+		score = READ_ONCE(vrq->rt.rt_nr_running) + tg_server_penalty(server);
+
+		if (!have_best || score < best_score ||
+		    (score == best_score && candidate == cpu)) {
+			best_score = score;
+			best_cpu = candidate;
+			have_best = true;
+		}
+	}
+
+	return have_best ? best_cpu : cpu;
 }
 #endif
 

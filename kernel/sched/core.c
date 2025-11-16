@@ -2161,6 +2161,24 @@ unsigned long get_wchan(struct task_struct *p)
 }
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+static int tg_select_task_cpu(struct task_struct *p, int cpu)
+{
+	struct task_group *tg = task_group(p);
+	if (!tg || tg == &root_task_group || !tg->tg_server)
+		return cpu;
+
+	if (task_has_dl_policy(p))
+		return tg_server_select_dl_cpu(p, tg, cpu);
+
+	if (task_has_rt_policy(p))
+		return tg_server_select_rt_cpu(p, tg, cpu);
+
+	if (p->sched_class == &fair_sched_class)
+		return tg_server_select_fair_cpu(p, tg, cpu);
+
+	return cpu;
+}
+
 void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
 {
 	struct task_group *tg = task_group(p);
@@ -3922,6 +3940,10 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
 	} else {
 		cpu = cpumask_any(p->cpus_ptr);
 	}
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	cpu = tg_select_task_cpu(p, cpu);
+#endif
 
 	/*
 	 * In order not to call set_task_cpu() on a blocking task we need

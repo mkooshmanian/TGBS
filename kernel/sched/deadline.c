@@ -2730,6 +2730,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
 {
 	return pick_task_dl(rq);
 }
+
+int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cpu)
+{
+	unsigned int best_score = UINT_MAX;
+	bool have_best = false;
+	int best_cpu = cpu;
+	int candidate;
+
+	for_each_cpu(candidate, p->cpus_ptr) {
+		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
+		struct rq *vrq;
+		unsigned int score;
+
+		if (!server)
+			continue;
+
+		if (!dl_task_fits_capacity(p, candidate))
+			continue;
+
+		vrq = READ_ONCE(server->vrq);
+		if (!vrq)
+			continue;
+
+		score = READ_ONCE(vrq->dl.dl_nr_running) + tg_server_penalty(server);
+
+		if (!have_best || score < best_score ||
+		    (score == best_score && candidate == cpu)) {
+			best_score = score;
+			best_cpu = candidate;
+			have_best = true;
+		}
+	}
+
+	return have_best ? best_cpu : cpu;
+}
 #endif
 
 static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
