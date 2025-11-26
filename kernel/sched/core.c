@@ -2184,8 +2184,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
 
 	BUG_ON(vrq != server->vrq);
 
-	if (READ_ONCE(vrq->nr_running) == 1)
+	if (READ_ONCE(vrq->nr_running) == 1) {
+		bool was_active = dl_server_active(server);
+
 		dl_server_start(server);
+		if (!was_active && dl_server_active(server))
+			trace_sched_tg_server_start(tg, server,
+						    server->rq ? cpu_of(server->rq) : cpu,
+						    cpu,
+						    cgroup_id(tg->css.cgroup));
+	}
 }
 
 void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
@@ -2204,8 +2212,16 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
 
 	BUG_ON(vrq != server->vrq);
 
-	if (!READ_ONCE(vrq->nr_running))
+	if (!READ_ONCE(vrq->nr_running)) {
+		bool was_active = dl_server_active(server);
+
 		dl_server_stop(server);
+		if (was_active && !dl_server_active(server))
+			trace_sched_tg_server_stop(tg, server,
+						   server->rq ? cpu_of(server->rq) : cpu,
+						   cpu,
+						   cgroup_id(tg->css.cgroup));
+	}
 }
 
 void tg_server_account_runtime(struct rq *rq,
@@ -2228,7 +2244,46 @@ void tg_server_account_runtime(struct rq *rq,
 	if (!server)
 		return;
 
+	s64 runtime_before = server->runtime;
+
 	dl_server_update(server, delta_exec);
+
+	trace_sched_tg_server_runtime(tg, server, p, cpu,
+				      server->vrq ? cpu_of(server->vrq) : cpu,
+				      delta_exec, runtime_before,
+				      cgroup_id(tg->css.cgroup));
+}
+
+void tg_server_handle_throttle(struct sched_dl_entity *server)
+{
+	struct rq *rq;
+
+	if (!server)
+		return;
+
+	rq = server->rq;
+	if (!rq || server == &rq->fair_server || !server->tg)
+		return;
+
+	trace_sched_tg_server_throttle(server->tg, server, cpu_of(rq),
+				       server->vrq ? cpu_of(server->vrq) : -1,
+				       cgroup_id(server->tg->css.cgroup));
+}
+
+void tg_server_handle_unthrottle(struct sched_dl_entity *server)
+{
+	struct rq *rq;
+
+	if (!server)
+		return;
+
+	rq = server->rq;
+	if (!rq || server == &rq->fair_server || !server->tg)
+		return;
+
+	trace_sched_tg_server_unthrottle(server->tg, server, cpu_of(rq),
+					 server->vrq ? cpu_of(server->vrq) : -1,
+					 cgroup_id(server->tg->css.cgroup));
 }
 #endif
 
@@ -9573,6 +9628,7 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 	struct task_struct *p;
 	struct rq_flags vrf;
 	struct rq *parent_rq;
+	struct task_struct *prev, *next;
 
 	if (WARN_ON_ONCE(!dl_se))
 		return NULL;
@@ -9597,6 +9653,18 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 	p = tg_server_pick_fair_task(vrq);
 
 out:
+	prev = rcu_dereference_protected(vrq->curr,
+					 lockdep_is_held(&vrq->__lock));
+	if (!prev)
+		prev = vrq->idle;
+
+	next = p ? p : vrq->idle;
+
+	trace_sched_tg_server_pick(dl_se->tg, dl_se, prev, next,
+				   cpu_of(parent_rq),
+				   vrq ? cpu_of(vrq) : -1,
+				   cgroup_id(dl_se->tg->css.cgroup));
+
 	tg_server_vrq_unlock(vrq, &vrf);
 	return p;
 }
