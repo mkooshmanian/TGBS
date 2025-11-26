@@ -431,6 +431,8 @@ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 
 extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
 extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
 extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
+extern void tg_server_handle_throttle(struct sched_dl_entity *server);
+extern void tg_server_handle_unthrottle(struct sched_dl_entity *server);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
