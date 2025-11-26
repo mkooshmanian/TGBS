@@ -826,6 +826,174 @@ TRACE_EVENT(sched_wake_idle_without_ipi,
 	TP_printk("cpu=%d", __entry->cpu)
 );
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+DECLARE_EVENT_CLASS(sched_tg_server_template,
+
+	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+		 int cpu, int vrq_cpu, u64 cgrp_id),
+
+	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id),
+
+	TP_STRUCT__entry(
+		__field(u64, cgrp_id)
+		__field(void *, tg)
+		__field(void *, server)
+		__field(int, cpu)
+		__field(int, vrq_cpu)
+		__field(u64, dl_runtime)
+		__field(u64, dl_period)
+		__field(s64, runtime)
+		__field(u64, deadline)
+	),
+
+	TP_fast_assign(
+		__entry->cgrp_id = cgrp_id;
+		__entry->tg = tg;
+		__entry->server = server;
+		__entry->cpu = cpu;
+		__entry->vrq_cpu = vrq_cpu;
+		__entry->dl_runtime = server ? server->dl_runtime : 0;
+		__entry->dl_period = server ? server->dl_period : 0;
+		__entry->runtime = server ? server->runtime : 0;
+		__entry->deadline = server ? server->deadline : 0;
+	),
+
+	TP_printk("cgrp_id=%llu tg=%p server=%p cpu=%d vrq_cpu=%d runtime=%lld dl_runtime=%llu dl_period=%llu deadline=%llu",
+		  (unsigned long long)__entry->cgrp_id, __entry->tg,
+		  __entry->server, __entry->cpu, __entry->vrq_cpu,
+		  (long long)__entry->runtime,
+		  (unsigned long long)__entry->dl_runtime,
+		  (unsigned long long)__entry->dl_period,
+		  (unsigned long long)__entry->deadline)
+);
+
+DEFINE_EVENT(sched_tg_server_template, sched_tg_server_start,
+
+	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+		 int cpu, int vrq_cpu, u64 cgrp_id),
+
+	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
+);
+
+DEFINE_EVENT(sched_tg_server_template, sched_tg_server_stop,
+
+	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+		 int cpu, int vrq_cpu, u64 cgrp_id),
+
+	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
+);
+
+DEFINE_EVENT(sched_tg_server_template, sched_tg_server_throttle,
+
+	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+		 int cpu, int vrq_cpu, u64 cgrp_id),
+
+	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
+);
+
+DEFINE_EVENT(sched_tg_server_template, sched_tg_server_unthrottle,
+
+	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+		 int cpu, int vrq_cpu, u64 cgrp_id),
+
+	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
+);
+
+TRACE_EVENT(sched_tg_server_runtime,
+
+	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+		 struct task_struct *p, int cpu, int vrq_cpu,
+		 s64 delta_exec, s64 runtime_before, u64 cgrp_id),
+
+	TP_ARGS(tg, server, p, cpu, vrq_cpu, delta_exec, runtime_before,
+		cgrp_id),
+
+	TP_STRUCT__entry(
+		__field(u64, cgrp_id)
+		__field(void *, tg)
+		__field(void *, server)
+		__field(pid_t, pid)
+		__field(int, cpu)
+		__field(int, vrq_cpu)
+		__field(s64, delta_exec)
+		__field(s64, runtime_before)
+		__field(s64, runtime_after)
+		__field(u64, dl_runtime)
+		__field(u64, dl_period)
+		__field(u64, deadline)
+	),
+
+	TP_fast_assign(
+		__entry->cgrp_id = cgrp_id;
+		__entry->tg = tg;
+		__entry->server = server;
+		__entry->pid = p ? task_pid_nr(p) : 0;
+		__entry->cpu = cpu;
+		__entry->vrq_cpu = vrq_cpu;
+		__entry->delta_exec = delta_exec;
+		__entry->runtime_before = runtime_before;
+		__entry->runtime_after = server ? server->runtime : 0;
+		__entry->dl_runtime = server ? server->dl_runtime : 0;
+		__entry->dl_period = server ? server->dl_period : 0;
+		__entry->deadline = server ? server->deadline : 0;
+	),
+
+	TP_printk("cgrp_id=%llu tg=%p server=%p pid=%d cpu=%d vrq_cpu=%d delta=%lld runtime_before=%lld runtime_after=%lld dl_runtime=%llu dl_period=%llu deadline=%llu",
+		  (unsigned long long)__entry->cgrp_id, __entry->tg,
+		  __entry->server, __entry->pid, __entry->cpu,
+		  __entry->vrq_cpu, (long long)__entry->delta_exec,
+		  (long long)__entry->runtime_before,
+		  (long long)__entry->runtime_after,
+		  (unsigned long long)__entry->dl_runtime,
+			  (unsigned long long)__entry->dl_period,
+			  (unsigned long long)__entry->deadline)
+	);
+
+TRACE_EVENT(sched_tg_server_pick,
+
+		TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
+			 struct task_struct *prev, struct task_struct *next,
+			 int cpu, int vrq_cpu, u64 cgrp_id),
+
+		TP_ARGS(tg, server, prev, next, cpu, vrq_cpu, cgrp_id),
+
+	TP_STRUCT__entry(
+		__field(u64, cgrp_id)
+		__field(void *, tg)
+		__field(void *, server)
+		__field(void *, prev)
+		__field(pid_t, prev_pid)
+		__field(int, prev_prio)
+		__field(void *, next)
+		__field(pid_t, next_pid)
+		__field(int, next_prio)
+		__field(int, cpu)
+		__field(int, vrq_cpu)
+	),
+
+	TP_fast_assign(
+			__entry->cgrp_id   = cgrp_id;
+		__entry->tg        = tg;
+		__entry->server    = server;
+		__entry->prev      = prev;
+		__entry->prev_pid  = prev ? prev->pid : -1;
+		__entry->prev_prio = prev ? prev->prio : -1;
+		__entry->next      = next;
+		__entry->next_pid  = next ? next->pid : -1;
+		__entry->next_prio = next ? next->prio : -1;
+		__entry->cpu       = cpu;
+		__entry->vrq_cpu   = vrq_cpu;
+	),
+
+	TP_printk("cgrp_id=%llu tg=%p server=%p prev=%p pid=%d prio=%d next=%p pid=%d prio=%d cpu=%d vrq_cpu=%d",
+		(unsigned long long)__entry->cgrp_id,
+		__entry->tg, __entry->server,
+		__entry->prev, __entry->prev_pid, __entry->prev_prio,
+		__entry->next, __entry->next_pid, __entry->next_prio,
+		__entry->cpu, __entry->vrq_cpu)
+);
+#endif /* CONFIG_TG_BANDWIDTH_SERVER */
+
 /*
  * Following tracepoints are not exported in tracefs and provide hooking
  * mechanisms only for testing and debugging purposes.
