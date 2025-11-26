@@ -1080,8 +1080,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
 
 	if (dl_se->dl_yielded)
 		dl_se->dl_yielded = 0;
-	if (dl_se->dl_throttled)
+	if (dl_se->dl_throttled) {
 		dl_se->dl_throttled = 0;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		if (dl_server(dl_se))
+			tg_server_handle_unthrottle(dl_se);
+#endif
+	}
 
 	/*
 	 * If this is the replenishment of a deferred reservation,
@@ -1741,6 +1746,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64 
 throttle:
 	if (dl_runtime_exceeded(dl_se) || dl_se->dl_yielded) {
 		dl_se->dl_throttled = 1;
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		if (dl_server(dl_se))
+			tg_server_handle_throttle(dl_se);
+#endif
 
 		/* If requested, inform the user about runtime overruns. */
 		if (dl_runtime_exceeded(dl_se) &&
