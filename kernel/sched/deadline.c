@@ -1409,6 +1409,12 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_
 		if (!dl_se->dl_runtime)
 			return HRTIMER_NORESTART;
 
+		if (!dl_server_active(dl_se)) {
+			/* Throttled while stopped (sched-out case): just refill. */
+			replenish_dl_entity(dl_se);
+			return HRTIMER_NORESTART;
+		}
+
 		if (dl_se->dl_defer_armed) {
 			/*
 			 * First check if the server could consume runtime in background.
