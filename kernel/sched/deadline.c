@@ -1190,6 +1190,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 
 	lockdep_assert_rq_held(rq);
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (rq->clock_update_flags & RQCF_ACT_SKIP) {
+		unsigned int flags = rq->clock_update_flags;
+
+		/*
+		 * Virtual runqueues created for TG bandwidth servers do not
+		 * automatically advance their clocks. Bring their notion of
+		 * time up to date before translating rq->clock-based deadlines
+		 * into hrtimer expiry times.
+		 */
+		rq->clock_update_flags &= ~RQCF_ACT_SKIP;
+		update_rq_clock(rq);
+		rq->clock_update_flags = flags;
+	}
+#endif
+
 	/*
 	 * We want the timer to fire at the deadline, but considering
 	 * that it is actually coming from rq->clock and not from

@@ -2080,6 +2080,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
 	__balance_callbacks(rq);
 	raw_spin_rq_unlock(rq);
 }
+
+u64 sync_vrq_clock(struct rq *vrq, struct rq *phys)
+{
+	u64 now_phys;
+	s64 delta;
+
+	lockdep_assert_rq_held(vrq);
+	lockdep_assert_rq_held(phys);
+
+	now_phys = rq_clock_task(phys);
+	delta = now_phys - vrq->clock_task;
+
+	if (delta > 0) {
+		/*
+		 * Tasks executing on a virtual rq still consume CPU time on
+		 * the physical rq. Propagate the elapsed time so that the
+		 * virtual rq's clock-based accounting (runtime throttling,
+		 * vruntime updates, etc.) reflects reality.
+		 */
+		vrq->clock += delta;
+		vrq->clock_task += delta;
+		update_rq_clock_pelt(vrq, delta);
+	}
+
+	return now_phys;
+}
 #endif
 
 bool sched_task_on_rq(struct task_struct *p)
@@ -5574,9 +5600,23 @@ unsigned long long task_sched_runtime(struct task_struct *p)
 	 * thread, breaking clock_gettime().
 	 */
 	if (task_current_donor(rq, p) && task_on_rq_queued(p)) {
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		struct rq *task_vrq = tg_server_rq_of_task(rq, p);
+		struct rq_flags vrf = { };
+		bool vrq_locked = false;
+
+		if (task_vrq != rq) {
+			tg_server_vrq_lock(task_vrq, &vrf);
+			vrq_locked = true;
+		}
+#endif
 		prefetch_curr_exec_start(p);
 		update_rq_clock(rq);
 		p->sched_class->update_curr(rq);
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		if (vrq_locked)
+			tg_server_vrq_unlock(task_vrq, &vrf);
+#endif
 	}
 	ns = p->se.sum_exec_runtime;
 	task_rq_unlock(rq, p, &rf);

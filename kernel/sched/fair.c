@@ -1154,6 +1154,14 @@ void post_init_entity_util_avg(struct task_struct *p)
 
 static s64 update_se(struct rq *rq, struct sched_entity *se)
 {
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (entity_is_task(se)) {
+		struct rq *phys_rq = task_rq(task_of(se));
+
+		if (unlikely(phys_rq != rq))
+			sync_vrq_clock(rq, phys_rq);
+	}
+#endif
 	u64 now = rq_clock_task(rq);
 	s64 delta_exec;
 
@@ -1165,6 +1173,14 @@ static s64 update_se(struct rq *rq, struct sched_entity *se)
 	if (entity_is_task(se)) {
 		struct task_struct *donor = task_of(se);
 		struct task_struct *running = rq->curr;
+
+		/*
+		 * When se lives on a virtual rq, rq->curr still refers to the
+		 * vrq's idle proxy and runtime would be mis-accounted; switch to
+		 * the donor so we charge the actual task.
+		 */
+		if (unlikely(rq != task_rq(donor)))
+			running = donor;
 		/*
 		 * If se is a task, we account the time against the running
 		 * task, as w/ proxy-exec they may not be the same.
@@ -1377,6 +1393,21 @@ update_stats_curr_start(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	/*
 	 * We are starting a new run period:
 	 */
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (entity_is_task(se)) {
+		struct rq *vrq = rq_of(cfs_rq);
+		struct rq *phys_rq = task_rq(task_of(se));
+		u64 now;
+
+		if (unlikely(phys_rq != vrq))
+			now = sync_vrq_clock(vrq, phys_rq);
+		else
+			now = rq_clock_task(vrq);
+
+		se->exec_start = now;
+		return;
+	}
+#endif
 	se->exec_start = rq_clock_task(rq_of(cfs_rq));
 }
 

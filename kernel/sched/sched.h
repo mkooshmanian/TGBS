@@ -424,6 +424,7 @@ extern void sched_init_dl_servers(void);
 extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
 extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
 extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
+u64 sync_vrq_clock(struct rq *vrq, struct rq *phys);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
@@ -2517,15 +2518,59 @@ struct sched_class {
 #endif
 };
 
+static inline void
+__put_prev_task(struct rq *rq, struct task_struct *prev,
+		       struct task_struct *next)
+{
+	struct rq *task_rq = rq;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	bool locked = false;
+	struct rq_flags vrf = { };
+
+	task_rq = tg_server_rq_of_task(rq, prev);
+	if (task_rq != rq) {
+		tg_server_vrq_lock(task_rq, &vrf);
+		locked = true;
+	}
+#endif
+	prev->sched_class->put_prev_task(task_rq, prev, next);
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (locked)
+		tg_server_vrq_unlock(task_rq, &vrf);
+#endif
+}
+
+static inline void
+__set_next_task(struct rq *rq, struct task_struct *next, bool first)
+{
+	struct rq *task_rq = rq;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	bool locked = false;
+	struct rq_flags vrf = { };
+
+	task_rq = tg_server_rq_of_task(rq, next);
+	if (task_rq != rq) {
+		tg_server_vrq_lock(task_rq, &vrf);
+		locked = true;
+		sync_vrq_clock(task_rq, rq);
+	}
+#endif
+	next->sched_class->set_next_task(task_rq, next, first);
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (locked)
+		tg_server_vrq_unlock(task_rq, &vrf);
+#endif
+}
+
 static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 {
 	WARN_ON_ONCE(rq->donor != prev);
-	prev->sched_class->put_prev_task(rq, prev, NULL);
+	__put_prev_task(rq, prev, NULL);
 }
 
 static inline void set_next_task(struct rq *rq, struct task_struct *next)
 {
-	next->sched_class->set_next_task(rq, next, false);
+	__set_next_task(rq, next, false);
 }
 
 static inline void
@@ -2549,8 +2594,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
 	if (next == prev)
 		return;
 
-	prev->sched_class->put_prev_task(rq, prev, next);
-	next->sched_class->set_next_task(rq, next, true);
+	__put_prev_task(rq, prev, next);
+	__set_next_task(rq, next, true);
 }
 
 /*
