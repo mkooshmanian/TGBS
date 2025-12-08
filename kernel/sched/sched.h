@@ -425,6 +425,9 @@ extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
 extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
 extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
 u64 sync_vrq_clock(struct rq *vrq, struct rq *phys);
+extern void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags);
+extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
+extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
