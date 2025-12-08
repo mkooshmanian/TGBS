@@ -596,11 +596,14 @@ struct sched_entity {
 
 	u64				nr_migrations;
 
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
+	/* rq on which this entity is (to be) queued: */
+	struct cfs_rq			*cfs_rq;
+#endif
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	int				depth;
 	struct sched_entity		*parent;
-	/* rq on which this entity is (to be) queued: */
-	struct cfs_rq			*cfs_rq;
 	/* rq "owned" by this entity/group: */
 	struct cfs_rq			*my_q;
 	/* cached value of my_q->h_nr_running */

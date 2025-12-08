@@ -9074,6 +9074,7 @@ void __init sched_init(void)
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 		/* Root task group has no parent: keep entries NULL to stop traversal here. */
 		root_task_group.tg_server[i] = NULL;
+		rq->cfs.rq = rq;
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
@@ -9534,8 +9535,28 @@ unsigned long tg_root_bandwidth_sum(void)
 static struct task_struct *
 tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 {
-	/* TODO: implement actual selection for bandwidth servers. */
-	return NULL;
+	struct rq *vrq;
+	struct task_struct *p;
+	struct rq_flags vrf;
+	struct rq *parent_rq;
+
+	if (WARN_ON_ONCE(!dl_se))
+		return NULL;
+
+	vrq = dl_se->vrq;
+	if (WARN_ON_ONCE(!vrq))
+		return NULL;
+
+	parent_rq = dl_se->rq;
+	if (WARN_ON_ONCE(!parent_rq))
+		return NULL;
+	tg_server_vrq_lock(vrq, &vrf);
+
+	p = tg_server_pick_fair_task(vrq);
+
+out:
+	tg_server_vrq_unlock(vrq, &vrf);
+	return p;
 }
 
 void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
@@ -9546,6 +9567,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
 	server->vrq = vrq;
 	server->parent = parent;
 	tg->tg_server[cpu] = server;
+	vrq->cfs.rq = vrq;
 }
 
 void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
