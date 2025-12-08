@@ -2556,6 +2556,9 @@ __set_next_task(struct rq *rq, struct task_struct *next, bool first)
 		tg_server_vrq_lock(task_rq, &vrf);
 		locked = true;
 		sync_vrq_clock(task_rq, rq);
+		/* Keep the virtual rq's view of the context switch in sync. */
+		rq_set_donor(task_rq, next);
+		RCU_INIT_POINTER(task_rq->curr, next);
 	}
 #endif
 	next->sched_class->set_next_task(task_rq, next, first);

@@ -2400,10 +2400,37 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
 void wakeup_preempt(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct task_struct *donor = rq->donor;
+	struct rq *class_rq = rq;
+	bool same_rq = true;
 
-	if (p->sched_class == donor->sched_class)
-		donor->sched_class->wakeup_preempt(rq, p, flags);
-	else if (sched_class_above(p->sched_class, donor->sched_class))
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	{
+		struct rq *donor_rq = tg_server_rq_of_task(rq, donor);
+		struct rq *p_rq = tg_server_rq_of_task(rq, p);
+
+		class_rq = donor_rq;
+		same_rq = (donor_rq == p_rq);
+	}
+#endif
+
+	if (p->sched_class == donor->sched_class && same_rq) {
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		struct rq_flags vrf;
+		bool class_locked = false;
+
+		if (class_rq != rq) {
+			tg_server_vrq_lock(class_rq, &vrf);
+			class_locked = true;
+		}
+
+		donor->sched_class->wakeup_preempt(class_rq, p, flags);
+
+		if (class_locked)
+			tg_server_vrq_unlock(class_rq, &vrf);
+#else
+		donor->sched_class->wakeup_preempt(class_rq, p, flags);
+#endif
+	} else if (sched_class_above(p->sched_class, donor->sched_class))
 		resched_curr(rq);
 
 	/*
