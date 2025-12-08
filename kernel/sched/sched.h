@@ -81,6 +81,7 @@ struct cfs_rq;
 struct rt_rq;
 struct sched_group;
 struct cpuidle_state;
+struct task_group;
 
 #ifdef CONFIG_PARAVIRT
 # include <asm/paravirt.h>
@@ -419,6 +420,10 @@ extern void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
 		    dl_server_pick_f pick_task);
 extern void sched_init_dl_servers(void);
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
+#endif
+
 extern void dl_server_update_idle_time(struct rq *rq,
 		    struct task_struct *p);
 extern void fair_server_init(struct rq *rq);
@@ -574,12 +579,11 @@ static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
 extern int tg_nop(struct task_group *tg, void *data);
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
-extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
 		struct sched_dl_entity *server, int cpu,
 		struct sched_dl_entity *parent);
 extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
 extern void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period);
-extern bool tg_has_tasks(struct task_group *tg, bool active_only);
 extern unsigned long tg_root_bandwidth_sum(void);
 extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
 extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
@@ -1387,6 +1391,13 @@ DECLARE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 #define task_rq(p)		cpu_rq(task_cpu(p))
 #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
 #define raw_rq()		raw_cpu_ptr(&runqueues)
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+static inline bool rq_is_virtual(struct rq *rq)
+{
+	return rq != cpu_rq(cpu_of(rq));
+}
+#endif
 
 #ifdef CONFIG_SCHED_PROXY_EXEC
 static inline void rq_set_donor(struct rq *rq, struct task_struct *t)
@@ -2228,6 +2239,21 @@ static inline struct task_group *task_group(struct task_struct *p)
 }
 
 #endif /* !CONFIG_CGROUP_SCHED */
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+static inline struct rq *tg_server_rq_of_task(struct rq *rq,
+					      struct task_struct *p)
+{
+	struct task_group *tg = task_group(p);
+	struct rq *vrq;
+
+	if (!tg || tg == &root_task_group || !tg->tg_server)
+		return rq;
+
+	vrq = vrq_of_tg(tg, cpu_of(rq));
+	return vrq ? vrq : rq;
+}
+#endif
 
 static inline void __set_task_cpu(struct task_struct *p, unsigned int cpu)
 {

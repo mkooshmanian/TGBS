@@ -397,9 +397,11 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 {
 	struct sched_dl_entity *dl_se;
 	struct rq *rq;
+	struct rq *vrq;
 	struct dl_rq *dl_rq;
 	struct sched_dl_entity *parent;
-	bool has_active_tasks, is_active_group;
+	bool is_active_group;
+	unsigned int nr_task_running;
 	u64 old_runtime;
 	unsigned long flags;
 	unsigned long new_bw;
@@ -412,9 +414,11 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 		return;
 
 	rq = dl_se->rq;
+	vrq = dl_se->vrq;
 	dl_rq = dl_rq_of_se(dl_se);
+	BUG_ON(!vrq);
+
 	is_active_group = is_active_sched_group(tg);
-	has_active_tasks = tg_has_tasks(tg, true);
 
 	raw_spin_rq_lock_irqsave(rq, flags);
 	update_rq_clock(rq);
@@ -445,7 +449,12 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 			__sub_rq_bw(parent->dl_bw, dl_rq);
 	}
 
-	if (has_active_tasks)
+	/* Serialize the restart decision with enqueues and dequeues. */
+	raw_spin_rq_lock_nested(vrq, SINGLE_DEPTH_NESTING);
+	nr_task_running = vrq->nr_running;
+	raw_spin_rq_unlock(vrq);
+
+	if (nr_task_running)
 		dl_server_start(dl_se);
 
 	raw_spin_rq_unlock_irqrestore(rq, flags);
