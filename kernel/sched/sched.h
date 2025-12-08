@@ -428,6 +428,7 @@ u64 sync_vrq_clock(struct rq *vrq, struct rq *phys);
 extern void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags);
 extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
 extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
+extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
@@ -754,6 +755,10 @@ struct cfs_rq {
 		unsigned long	runnable_avg;
 	} removed;
 
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
+	struct rq		*rq;	/* Runqueue (physical or virtual) owning this cfs_rq */
+#endif
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	u64			last_update_tg_load_avg;
 	unsigned long		tg_load_avg_contrib;
@@ -772,8 +777,6 @@ struct cfs_rq {
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-	struct rq		*rq;	/* CPU runqueue to which this cfs_rq is attached */
-
 	/*
 	 * leaf cfs_rqs are those that hold tasks (lowest schedulable entity in
 	 * a hierarchy). Non-leaf lrqs hold other higher schedulable entities
@@ -1359,21 +1362,21 @@ struct rq {
 #endif
 };
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
 
-/* CPU runqueue to which this cfs_rq is attached */
+/* Runqueue (physical or virtual) to which this cfs_rq is attached */
 static inline struct rq *rq_of(struct cfs_rq *cfs_rq)
 {
 	return cfs_rq->rq;
 }
 
-#else /* !CONFIG_FAIR_GROUP_SCHED: */
+#else /* !CONFIG_FAIR_GROUP_SCHED && !CONFIG_TG_BANDWIDTH_SERVER: */
 
 static inline struct rq *rq_of(struct cfs_rq *cfs_rq)
 {
 	return container_of(cfs_rq, struct rq, cfs);
 }
-#endif /* !CONFIG_FAIR_GROUP_SCHED */
+#endif /* !CONFIG_FAIR_GROUP_SCHED && !CONFIG_TG_BANDWIDTH_SERVER */
 
 static inline int cpu_of(struct rq *rq)
 {
@@ -1632,7 +1635,7 @@ static inline void update_idle_core(struct rq *rq)
 static inline void update_idle_core(struct rq *rq) { }
 #endif /* !CONFIG_SCHED_SMT */
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#if defined(CONFIG_FAIR_GROUP_SCHED)
 
 static inline struct task_struct *task_of(struct sched_entity *se)
 {
@@ -1657,7 +1660,30 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
 	return grp->my_q;
 }
 
-#else /* !CONFIG_FAIR_GROUP_SCHED: */
+#elif defined(CONFIG_TG_BANDWIDTH_SERVER)
+
+static inline struct task_struct *task_of(struct sched_entity *se)
+{
+	WARN_ON_ONCE(!entity_is_task(se));
+	return container_of(se, struct task_struct, se);
+}
+
+static inline struct cfs_rq *task_cfs_rq(struct task_struct *p)
+{
+	return p->se.cfs_rq;
+}
+
+static inline struct cfs_rq *cfs_rq_of(const struct sched_entity *se)
+{
+	return se->cfs_rq;
+}
+
+static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
+{
+	return NULL;
+}
+
+#else /* !CONFIG_FAIR_GROUP_SCHED && !CONFIG_TG_BANDWIDTH_SERVER */
 
 #define task_of(_se)		container_of(_se, struct task_struct, se)
 
@@ -1680,7 +1706,7 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
 	return NULL;
 }
 
-#endif /* !CONFIG_FAIR_GROUP_SCHED */
+#endif /* CONFIG_FAIR_GROUP_SCHED || CONFIG_TG_BANDWIDTH_SERVER */
 
 extern void update_rq_clock(struct rq *rq);
 
@@ -2201,8 +2227,16 @@ static inline struct task_group *task_group(struct task_struct *p)
 /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
 static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 {
-#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
 	struct task_group *tg = task_group(p);
+#endif
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (!tg || tg == &root_task_group) {
+		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
+	} else if (tg->tg_server) {
+		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
+	}
 #endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED

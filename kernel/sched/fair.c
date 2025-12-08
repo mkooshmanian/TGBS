@@ -8894,6 +8894,13 @@ static struct task_struct *__pick_next_task_fair(struct rq *rq, struct task_stru
 	return pick_next_task_fair(rq, prev, NULL);
 }
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+struct task_struct *tg_server_pick_fair_task(struct rq *rq)
+{
+	return pick_task_fair(rq);
+}
+#endif
+
 static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)
 {
 	return pick_task_fair(dl_se->rq);
@@ -13212,11 +13219,22 @@ static void __set_next_task_fair(struct rq *rq, struct task_struct *p, bool firs
 	struct sched_entity *se = &p->se;
 
 	if (task_on_rq_queued(p)) {
+		struct rq *owner = rq;
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		/*
+		 * Tasks executing under a TG bandwidth server live on the
+		 * virtual rq backed by their cfs_rq. Make sure we reshuffle
+		 * the MRU list that actually owns this entity.
+		 */
+		owner = rq_of(cfs_rq_of(se));
+#endif
+
 		/*
 		 * Move the next running task to the front of the list, so our
 		 * cfs_tasks list becomes MRU one.
 		 */
-		list_move(&se->group_node, &rq->cfs_tasks);
+		list_move(&se->group_node, &owner->cfs_tasks);
 	}
 	if (!first)
 		return;
