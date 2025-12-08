@@ -1946,11 +1946,22 @@ static inline
 void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
 	u64 deadline = dl_se->deadline;
+	struct rq *rq = rq_of_dl_rq(dl_rq);
 
 	dl_rq->dl_nr_running++;
 
-	if (!dl_server(dl_se))
-		add_nr_running(rq_of_dl_rq(dl_rq), 1);
+	if (!dl_server(dl_se)) {
+		add_nr_running(rq, 1);
+	} else if (dl_se != &rq->fair_server) {
+		/*
+		 * TG bandwidth servers live on the physical rq's DL queue.
+		 * Count them so nr_running stays non-zero while they execute,
+		 * otherwise NO_HZ idle may incorrectly stop the tick.
+		 * Do not count the rq-local fair_server to avoid double
+		 * accounting CFS load.
+		 */
+		add_nr_running(rq, 1);
+	}
 
 	inc_dl_deadline(dl_rq, deadline);
 }
@@ -1958,11 +1969,16 @@ void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 static inline
 void dec_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
+	struct rq *rq = rq_of_dl_rq(dl_rq);
+
 	WARN_ON(!dl_rq->dl_nr_running);
 	dl_rq->dl_nr_running--;
 
-	if (!dl_server(dl_se))
-		sub_nr_running(rq_of_dl_rq(dl_rq), 1);
+	if (!dl_server(dl_se)) {
+		sub_nr_running(rq, 1);
+	} else if (dl_se != &rq->fair_server) {
+		sub_nr_running(rq, 1);
+	}
 
 	dec_dl_deadline(dl_rq, dl_se->deadline);
 }

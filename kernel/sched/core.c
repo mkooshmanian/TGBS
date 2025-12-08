@@ -2160,8 +2160,92 @@ unsigned long get_wchan(struct task_struct *p)
 	return ip;
 }
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
+{
+	struct task_group *tg = task_group(p);
+	int cpu;
+	struct sched_dl_entity *server;
+
+	if (!tg || tg == &root_task_group || !tg->tg_server)
+		return;
+
+	/*
+	 * ENQUEUE_DELAYED means the task never left the runqueue;
+	 * ignore the requeue so we do not double count.
+	 */
+	if (flags & ENQUEUE_DELAYED)
+		return;
+
+	cpu = cpu_of(vrq);
+	server = tg->tg_server[cpu];
+	if (!server)
+		return;
+
+	BUG_ON(vrq != server->vrq);
+
+	if (READ_ONCE(vrq->nr_running) == 1)
+		dl_server_start(server);
+}
+
+void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+{
+	struct task_group *tg = task_group(p);
+	int cpu;
+	struct sched_dl_entity *server;
+
+	if (!tg || tg == &root_task_group || !tg->tg_server)
+		return;
+
+	cpu = cpu_of(vrq);
+	server = tg->tg_server[cpu];
+	if (!server)
+		return;
+
+	BUG_ON(vrq != server->vrq);
+
+	if (!READ_ONCE(vrq->nr_running))
+		dl_server_stop(server);
+}
+
+void tg_server_account_runtime(struct rq *rq,
+					     struct task_struct *p,
+					     s64 delta_exec)
+{
+	struct task_group *tg;
+	struct sched_dl_entity *server;
+	int cpu;
+
+	if (unlikely(delta_exec <= 0))
+		return;
+
+	tg = task_group(p);
+	if (!tg || tg == &root_task_group || !tg->tg_server)
+		return;
+
+	cpu = cpu_of(rq);
+	server = READ_ONCE(tg->tg_server[cpu]);
+	if (!server)
+		return;
+
+	dl_server_update(server, delta_exec);
+}
+#endif
+
 void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
+	struct rq *task_rq = rq;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct rq_flags vrf;
+	bool class_locked = false;
+
+	task_rq = tg_server_rq_of_task(rq, p);
+	if (task_rq != rq) {
+		tg_server_vrq_lock(task_rq, &vrf);
+		class_locked = true;
+	}
+#endif
+
 	if (!(flags & ENQUEUE_NOCLOCK))
 		update_rq_clock(rq);
 
@@ -2172,7 +2256,7 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	 */
 	uclamp_rq_inc(rq, p, flags);
 
-	p->sched_class->enqueue_task(rq, p, flags);
+	p->sched_class->enqueue_task(task_rq, p, flags);
 
 	psi_enqueue(p, flags);
 
@@ -2181,6 +2265,13 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 
 	if (sched_core_enabled(rq))
 		sched_core_enqueue(rq, p);
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	tg_server_enqueue(task_rq, p, flags);
+	if (class_locked) {
+		tg_server_vrq_unlock(task_rq, &vrf);
+	}
+#endif
 }
 
 /*
@@ -2188,6 +2279,18 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
  */
 inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 {
+	bool ret;
+	struct rq *task_rq = rq;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct rq_flags vrf;
+	bool class_locked = false;
+	task_rq = tg_server_rq_of_task(rq, p);
+	if (task_rq != rq) {
+		tg_server_vrq_lock(task_rq, &vrf);
+		class_locked = true;
+	}
+#endif
+
 	if (sched_core_enabled(rq))
 		sched_core_dequeue(rq, p, flags);
 
@@ -2204,7 +2307,18 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	 * and mark the task ->sched_delayed.
 	 */
 	uclamp_rq_dec(rq, p);
-	return p->sched_class->dequeue_task(rq, p, flags);
+
+	ret = p->sched_class->dequeue_task(task_rq, p, flags);
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	if (ret)
+		tg_server_dequeue(task_rq, p);
+	if (class_locked) {
+		tg_server_vrq_unlock(task_rq, &vrf);
+	}
+#endif
+
+	return ret;
 }
 
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
