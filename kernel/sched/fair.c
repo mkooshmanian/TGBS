@@ -1193,6 +1193,10 @@ static s64 update_se(struct rq *rq, struct sched_entity *se)
 
 		/* cgroup time is always accounted against the donor */
 		cgroup_account_cputime(donor, delta_exec);
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+		tg_server_account_runtime(rq, donor, delta_exec);
+#endif
 	} else {
 		/* If not task, account the time against donor se  */
 		se->sum_exec_runtime += delta_exec;
