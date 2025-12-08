@@ -429,6 +429,7 @@ extern void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags);
 extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
 extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
 extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
+extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
@@ -878,6 +879,10 @@ struct rt_rq {
 
 	int			rt_queued;
 
+#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
+	struct rq		*rq; /* Runqueue (physical or virtual) owning this rt_rq */
+#endif
+
 #ifdef CONFIG_RT_GROUP_SCHED
 	int			rt_throttled;
 	u64			rt_time; /* consumed RT time, goes up in update_curr_rt */
@@ -886,9 +891,8 @@ struct rt_rq {
 	raw_spinlock_t		rt_runtime_lock;
 
 	unsigned int		rt_nr_boosted;
-
-	struct rq		*rq; /* this is always top-level rq, cache? */
 #endif
+
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group	*tg; /* this tg has "this" rt_rq on given CPU for runnable entities */
 #endif
@@ -2234,8 +2238,10 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 	if (!tg || tg == &root_task_group) {
 		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
+		p->rt.rt_rq = &cpu_rq(cpu)->rt;
 	} else if (tg->tg_server) {
 		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
+		p->rt.rt_rq = &tg->tg_server[cpu]->vrq->rt;
 	}
 #endif
 
