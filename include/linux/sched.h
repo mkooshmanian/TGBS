@@ -735,6 +735,7 @@ struct sched_dl_entity {
 	dl_server_pick_f		server_pick_task;
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct rq			*vrq;
 	struct sched_dl_entity		*parent;
 	struct task_group		*tg;
 #endif

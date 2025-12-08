@@ -2051,6 +2051,22 @@ static inline void uclamp_post_fork(struct task_struct *p) { }
 static inline void init_uclamp(void) { }
 #endif /* !CONFIG_UCLAMP_TASK */
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+struct rq *vrq_of_tg(struct task_group *tg, int cpu)
+{
+	struct sched_dl_entity *server;
+
+	if (!tg || tg == &root_task_group || !tg->tg_server)
+		return NULL;
+
+	server = READ_ONCE(tg->tg_server[cpu]);
+	if (!server)
+		return NULL;
+
+	return READ_ONCE(server->vrq);
+}
+#endif
+
 bool sched_task_on_rq(struct task_struct *p)
 {
 	return task_on_rq_queued(p);
@@ -9179,7 +9195,7 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
 	return 1;
 }
 
-bool tg_has_tasks(struct task_group *tg, bool active_only)
+static bool tg_has_tasks(struct task_group *tg)
 {
 	struct css_task_iter it;
 	struct task_struct *task;
@@ -9187,15 +9203,8 @@ bool tg_has_tasks(struct task_group *tg, bool active_only)
 
 	css_task_iter_start(&tg->css, 0, &it);
 	while ((task = css_task_iter_next(&it))) {
-		if (!active_only) {
-			ret = true;
-			break;
-		}
-
-		if (task_on_rq_queued(task) || task_is_running(task)) {
-			ret = true;
-			break;
-		}
+		ret = true;
+		break;
 	}
 	css_task_iter_end(&it);
 
@@ -9232,11 +9241,12 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 	return NULL;
 }
 
-void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
 		struct sched_dl_entity *server, int cpu,
 		struct sched_dl_entity *parent)
 {
 	server->tg = tg;
+	server->vrq = vrq;
 	server->parent = parent;
 	tg->tg_server[cpu] = server;
 }
@@ -9246,6 +9256,89 @@ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
 	raw_spin_lock_init(&dl_bw->dl_runtime_lock);
 	dl_bw->dl_period = period;
 	dl_bw->dl_runtime = runtime;
+}
+
+static struct rq *alloc_virtual_rq(struct task_group *tg, int cpu,
+				   struct rq *template)
+{
+	struct rq *vrq;
+	u64 now = sched_clock_cpu(cpu);
+
+	vrq = kzalloc_node(sizeof(*vrq), GFP_KERNEL, cpu_to_node(cpu));
+	if (!vrq)
+		return NULL;
+
+	raw_spin_lock_init(&vrq->__lock);
+	vrq->nr_running = 0;
+	vrq->calc_load_active = 0;
+	vrq->calc_load_update = jiffies + LOAD_FREQ;
+
+	/*
+	 * Virtual runqueues do not drive the hardware clock, but load-accounting
+	 * helpers expect rq_clock() assertions to pass. Pretend we're indefinitely
+	 * skipping clock updates.
+	 */
+	vrq->clock_update_flags = RQCF_ACT_SKIP;
+	vrq->clock = now;
+	vrq->clock_task = now;
+	vrq->clock_pelt = 0;
+	vrq->clock_pelt_idle = 0;
+	vrq->clock_idle = 0;
+
+	init_cfs_rq(&vrq->cfs);
+	init_rt_rq(&vrq->rt);
+	init_dl_rq(&vrq->dl);
+
+	INIT_LIST_HEAD(&vrq->cfs_tasks);
+
+	vrq->cpu = cpu;
+	vrq->online = 0;
+	vrq->idle = idle_task(cpu);
+	vrq->curr = vrq->idle;
+	vrq->rd = template ? template->rd : NULL;
+	vrq->sd = template ? template->sd : NULL;
+	vrq->cpu_capacity = template ? template->cpu_capacity : SCHED_CAPACITY_SCALE;
+	vrq->balance_callback = NULL;
+	atomic_set(&vrq->nr_iowait, 0);
+#ifdef CONFIG_NO_HZ_COMMON
+	atomic_set(&vrq->nohz_flags, 0);
+#endif
+#ifdef CONFIG_SCHED_CORE
+	vrq->core = vrq;
+	vrq->core_pick = NULL;
+	vrq->core_dl_server = NULL;
+	vrq->core_enabled = 0;
+	vrq->core_tree = RB_ROOT;
+	vrq->core_forceidle_count = 0;
+	vrq->core_forceidle_occupation = 0;
+	vrq->core_forceidle_start = 0;
+	vrq->core_cookie = 0UL;
+#endif
+
+	hrtick_rq_init(vrq);
+
+	if (!zalloc_cpumask_var_node(&vrq->scratch_mask, GFP_KERNEL,
+				     cpu_to_node(cpu)))
+		goto free_rq;
+
+	return vrq;
+
+free_rq:
+	kfree(vrq);
+	return NULL;
+}
+
+static void free_virtual_rq(struct rq *vrq)
+{
+	if (!vrq)
+		return;
+
+	if (cpumask_available(vrq->scratch_mask))
+		free_cpumask_var(vrq->scratch_mask);
+#ifdef CONFIG_SCHED_HRTICK
+	hrtimer_cancel(&vrq->hrtick_timer);
+#endif
+	kfree(vrq);
 }
 
 int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
@@ -9261,13 +9354,20 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
 
 	for_each_possible_cpu(cpu) {
 		struct sched_dl_entity *server;
-		struct rq *rq = cpu_rq(cpu);
+		struct rq *parent_rq = cpu_rq(cpu);
+		struct rq *vrq;
 		struct sched_dl_entity *parent_server =
 			parent ? parent->tg_server[cpu] : NULL;
 
 		server = kzalloc_node(sizeof(*server), GFP_KERNEL, cpu_to_node(cpu));
 		if (!server)
 			goto err_free;
+
+		vrq = alloc_virtual_rq(tg, cpu, parent_rq);
+		if (!vrq) {
+			kfree(server);
+			goto err_free;
+		}
 
 		init_dl_entity(server);
 		server->dl_runtime = tg->tg_bandwidth.dl_runtime;
@@ -9277,16 +9377,24 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
 		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
 		server->dl_server = 1;
 
-		dl_server_init(server, rq, tg_bandwidth_server_pick_task);
+		dl_server_init(server, parent_rq, tg_bandwidth_server_pick_task);
 
-		init_tg_bandwidth_entry(tg, rq, server, cpu, parent_server);
+		init_tg_bandwidth_entry(tg, vrq, server, cpu, parent_server);
 	}
 
 	return 1;
 
 err_free:
 	for_each_possible_cpu(cpu) {
-		kfree(tg->tg_server[cpu]);
+		struct sched_dl_entity *server = tg->tg_server ? tg->tg_server[cpu] : NULL;
+		struct rq *vrq;
+
+		if (!server)
+			continue;
+
+		vrq = server->vrq;
+		free_virtual_rq(vrq);
+		kfree(server);
 		tg->tg_server[cpu] = NULL;
 	}
 	kfree(tg->tg_server);
@@ -9304,7 +9412,10 @@ void free_tg_bandwidth_server(struct task_group *tg)
 		return;
 
 	for_each_possible_cpu(cpu) {
-		if (!tg->tg_server[cpu])
+		struct sched_dl_entity *server = tg->tg_server[cpu];
+		struct rq *vrq;
+
+		if (!server)
 			continue;
 
 		/*
@@ -9315,13 +9426,16 @@ void free_tg_bandwidth_server(struct task_group *tg)
 		 * Fix this issue by changing the group runtime
 		 * to 0 immediately before freeing it.
 		 */
-		if (tg->tg_server[cpu]->dl_runtime)
-			init_tg_dl_se(tg, cpu, 0, tg->tg_server[cpu]->dl_period);
+		if (server->dl_runtime)
+			init_tg_dl_se(tg, cpu, 0, server->dl_period);
 
-		raw_spin_rq_lock_irqsave(cpu_rq(cpu), flags);
-		hrtimer_cancel(&tg->tg_server[cpu]->dl_timer);
-		raw_spin_rq_unlock_irqrestore(cpu_rq(cpu), flags);
-		kfree(tg->tg_server[cpu]);
+		vrq = server->vrq;
+		raw_spin_rq_lock_irqsave(vrq, flags);
+		hrtimer_cancel(&server->dl_timer);
+		raw_spin_rq_unlock_irqrestore(vrq, flags);
+
+		free_virtual_rq(vrq);
+		kfree(server);
 		tg->tg_server[cpu] = NULL;
 	}
 
@@ -9383,7 +9497,7 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
 		return -EINVAL;
 
 	if (dl_bandwidth_enabled() && !runtime && cur_runtime &&
-	    tg_has_tasks(tg, false))
+	    tg_has_tasks(tg))
 		return -EBUSY;
 
 	total = to_ratio(period, runtime);
