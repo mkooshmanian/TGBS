@@ -94,7 +94,7 @@ void init_rt_rq(struct rt_rq *rt_rq)
 #endif
 }
 
-#ifdef CONFIG_RT_GROUP_SCHED
+#if defined(CONFIG_RT_GROUP_SCHED)
 
 static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
 
@@ -292,7 +292,55 @@ err:
 	return 0;
 }
 
-#else /* !CONFIG_RT_GROUP_SCHED: */
+#elif defined(CONFIG_TG_BANDWIDTH_SERVER)
+
+#define rt_entity_is_task(rt_se) (1)
+
+static inline struct task_struct *rt_task_of(struct sched_rt_entity *rt_se)
+{
+	return container_of(rt_se, struct task_struct, rt);
+}
+
+static inline struct rq *rq_of_rt_rq(struct rt_rq *rt_rq)
+{
+	if (WARN_ON_ONCE(!rt_rq))
+		return NULL;
+	if (WARN_ON_ONCE(!rt_rq->rq))
+		return NULL;
+	return rt_rq->rq;
+}
+
+static inline struct rt_rq *rt_rq_of_se(struct sched_rt_entity *rt_se)
+{
+	struct rt_rq *rt_rq = rt_se->rt_rq;
+
+	if (unlikely(!rt_rq)) {
+		struct task_struct *p = rt_task_of(rt_se);
+
+		WARN_ON_ONCE(!rt_rq);
+		return &task_rq(p)->rt;
+	}
+
+	return rt_rq;
+}
+
+static inline struct rq *rq_of_rt_se(struct sched_rt_entity *rt_se)
+{
+	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
+
+	return rq_of_rt_rq(rt_rq);
+}
+
+void unregister_rt_sched_group(struct task_group *tg) { }
+
+void free_rt_sched_group(struct task_group *tg) { }
+
+int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
+{
+	return 1;
+}
+
+#else /* !CONFIG_RT_GROUP_SCHED && !CONFIG_TG_BANDWIDTH_SERVER */
 
 #define rt_entity_is_task(rt_se) (1)
 
@@ -328,7 +376,7 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 {
 	return 1;
 }
-#endif /* !CONFIG_RT_GROUP_SCHED */
+#endif /* CONFIG_RT_GROUP_SCHED || CONFIG_TG_BANDWIDTH_SERVER */
 
 static inline bool need_pull_rt_task(struct rq *rq, struct task_struct *prev)
 {
@@ -1707,6 +1755,13 @@ static struct task_struct *pick_task_rt(struct rq *rq)
 	return p;
 }
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+struct task_struct *tg_server_pick_rt_task(struct rq *rq)
+{
+	return pick_task_rt(rq);
+}
+#endif
+
 static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
@@ -2553,9 +2608,15 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
 {
 	struct rt_rq *rt_rq;
 
-#ifdef CONFIG_RT_GROUP_SCHED // XXX maybe add task_rt_rq(), see also sched_rt_period_rt_rq
+#ifdef CONFIG_RT_GROUP_SCHED
 	rt_rq = task_group(p)->rt_rq[cpu];
 	WARN_ON(!rt_group_sched_enabled() && rt_rq->tg != &root_task_group);
+#elif defined(CONFIG_TG_BANDWIDTH_SERVER)
+	{
+		struct rq *task_rq = tg_server_rq_of_task(cpu_rq(cpu), p);
+
+		rt_rq = &task_rq->rt;
+	}
 #else
 	rt_rq = &cpu_rq(cpu)->rt;
 #endif
