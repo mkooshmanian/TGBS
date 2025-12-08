@@ -9045,6 +9045,7 @@ void __init sched_init(void)
 		/* Root task group has no parent: keep entries NULL to stop traversal here. */
 		root_task_group.tg_server[i] = NULL;
 		rq->cfs.rq = rq;
+		rq->rt.rq = rq;
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
@@ -9522,6 +9523,10 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 		return NULL;
 	tg_server_vrq_lock(vrq, &vrf);
 
+	p = tg_server_pick_rt_task(vrq);
+	if (p)
+		goto out;
+
 	p = tg_server_pick_fair_task(vrq);
 
 out:
@@ -9538,6 +9543,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
 	server->parent = parent;
 	tg->tg_server[cpu] = server;
 	vrq->cfs.rq = vrq;
+	vrq->rt.rq = vrq;
 }
 
 void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
