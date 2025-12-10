@@ -741,10 +741,14 @@ struct sched_dl_entity {
 	struct rq			*rq;
 	dl_server_pick_f		server_pick_task;
 
-#ifdef CONFIG_TG_BANDWIDTH_SERVER
-	struct rq			*vrq;
-	struct sched_dl_entity		*parent;
+#if defined(CONFIG_TG_BANDWIDTH_SERVER)
+	/* rq on which this entity is (to be) queued: */
+	struct dl_rq			*dl_rq;
+
+	/* task group, related virtual runqueue and parent server */
 	struct task_group		*tg;
+	struct rq				*vrq;
+	struct sched_dl_entity	*parent;
 #endif
 
 #ifdef CONFIG_RT_MUTEXES
