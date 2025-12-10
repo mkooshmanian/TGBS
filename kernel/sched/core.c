@@ -2052,6 +2052,8 @@ static inline void init_uclamp(void) { }
 #endif /* !CONFIG_UCLAMP_TASK */
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+static void __balance_callbacks(struct rq *rq);
+
 struct rq *vrq_of_tg(struct task_group *tg, int cpu)
 {
 	struct sched_dl_entity *server;
@@ -2064,6 +2066,19 @@ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
 		return NULL;
 
 	return READ_ONCE(server->vrq);
+}
+
+void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf)
+{
+	raw_spin_rq_lock_nested(rq, SINGLE_DEPTH_NESTING);
+	rq_pin_lock(rq, rf);
+}
+
+void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
+{
+	rq_unpin_lock(rq, rf);
+	__balance_callbacks(rq);
+	raw_spin_rq_unlock(rq);
 }
 #endif
 
