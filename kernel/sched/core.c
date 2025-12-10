@@ -9076,6 +9076,7 @@ void __init sched_init(void)
 		root_task_group.tg_server[i] = NULL;
 		rq->cfs.rq = rq;
 		rq->rt.rq = rq;
+		rq->dl.rq = rq;
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
@@ -9553,6 +9554,10 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
 		return NULL;
 	tg_server_vrq_lock(vrq, &vrf);
 
+	p = tg_server_pick_dl_task(vrq);
+	if (p)
+		goto out;
+
 	p = tg_server_pick_rt_task(vrq);
 	if (p)
 		goto out;
@@ -9574,6 +9579,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
 	tg->tg_server[cpu] = server;
 	vrq->cfs.rq = vrq;
 	vrq->rt.rq = vrq;
+	vrq->dl.rq = vrq;
 }
 
 void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
@@ -10070,7 +10076,7 @@ static void sched_change_group(struct task_struct *tsk)
 	tg = autogroup_task_group(tsk, tg);
 	tsk->sched_task_group = tg;
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
 	if (tsk->sched_class->task_change_group)
 		tsk->sched_class->task_change_group(tsk);
 	else

@@ -430,6 +430,7 @@ extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
 extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
 extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
 extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
+extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
@@ -960,6 +961,10 @@ struct dl_rq {
 	 * by the GRUB algorithm.
 	 */
 	u64			bw_ratio;
+
+#if defined(CONFIG_TG_BANDWIDTH_SERVER)
+	struct rq		*rq;	/* Runqueue (physical or virtual) owning this dl_rq */
+#endif
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -2239,9 +2244,11 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 	if (!tg || tg == &root_task_group) {
 		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
 		p->rt.rt_rq = &cpu_rq(cpu)->rt;
+		p->dl.dl_rq = &cpu_rq(cpu)->dl;
 	} else if (tg->tg_server) {
 		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
 		p->rt.rt_rq = &tg->tg_server[cpu]->vrq->rt;
+		p->dl.dl_rq = &tg->tg_server[cpu]->vrq->dl;
 	}
 #endif
 
@@ -2552,7 +2559,7 @@ struct sched_class {
 
 	void (*update_curr)(struct rq *rq);
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
 	void (*task_change_group)(struct task_struct *p);
 #endif
 
