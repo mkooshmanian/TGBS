@@ -82,6 +82,7 @@ struct rt_rq;
 struct sched_group;
 struct cpuidle_state;
 struct task_group;
+struct rq_flags;
 
 #ifdef CONFIG_PARAVIRT
 # include <asm/paravirt.h>
@@ -421,6 +422,8 @@ extern void sched_init_dl_servers(void);
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
+extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
+extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
 #endif
 
 extern void dl_server_update_idle_time(struct rq *rq,
