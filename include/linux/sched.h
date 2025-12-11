@@ -749,6 +749,10 @@ struct sched_dl_entity {
 	struct task_group		*tg;
 	struct rq				*vrq;
 	struct sched_dl_entity	*parent;
+
+	struct llist_node		tgbs_irq_node;
+	atomic_t				tgbs_irq_pending;
+	atomic_long_t			tgbs_irq_actions;
 #endif
 
 #ifdef CONFIG_RT_MUTEXES

@@ -1235,6 +1235,11 @@ struct rq {
 
 	struct sched_dl_entity	fair_server;
 
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct llist_head	tgbs_action_list;
+	struct irq_work		tgbs_action_work;
+#endif
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* list of leaf cfs_rq on this CPU: */
 	struct list_head	leaf_cfs_rq_list;
