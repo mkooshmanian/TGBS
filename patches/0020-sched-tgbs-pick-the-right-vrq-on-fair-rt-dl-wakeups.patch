@@ -1,0 +1,262 @@
+From 0f0fe9578d8343a80b147f2068ded5689a1c32d1 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Sun, 16 Nov 2025 11:09:28 +0100
+Subject: [PATCH 20/22] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
+
+Add policy-specific helpers mirroring root-rq placement when we select a
+task-group server: CFS prefers the lightest vrq, RT enforces uclamp
+capacity, and DL consults its own vrq depth plus capacity limits; active
+servers now incur a small penalty while throttled ones get a heavy one so
+idle, unthrottled servers are picked first, with ties broken toward the
+original CPU. select_task_rq() routes TG_BANDWIDTH_SERVER tasks through
+these helpers so non-root groups land on the correct virtual rq, paving
+the way for proper multi-core support.
+---
+ kernel/sched/core.c     | 22 +++++++++++++++
+ kernel/sched/deadline.c | 35 ++++++++++++++++++++++++
+ kernel/sched/fair.c     | 32 ++++++++++++++++++++++
+ kernel/sched/rt.c       | 59 +++++++++++++++++++++++++++++++++++++++++
+ kernel/sched/sched.h    | 24 +++++++++++++++++
+ 5 files changed, 172 insertions(+)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index a1c74f7fa2c2..55163532c92c 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2161,6 +2161,24 @@ unsigned long get_wchan(struct task_struct *p)
+ }
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
++static int tg_select_task_cpu(struct task_struct *p, int cpu)
++{
++	struct task_group *tg = task_group(p);
++	if (!tg || tg == &root_task_group || !tg->tg_server)
++		return cpu;
++
++	if (task_has_dl_policy(p))
++		return tg_server_select_dl_cpu(p, tg, cpu);
++
++	if (task_has_rt_policy(p))
++		return tg_server_select_rt_cpu(p, tg, cpu);
++
++	if (p->sched_class == &fair_sched_class)
++		return tg_server_select_fair_cpu(p, tg, cpu);
++
++	return cpu;
++}
++
+ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
+ {
+ 	struct task_group *tg = task_group(p);
+@@ -3923,6 +3941,10 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
+ 		cpu = cpumask_any(p->cpus_ptr);
+ 	}
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	cpu = tg_select_task_cpu(p, cpu);
++#endif
++
+ 	/*
+ 	 * In order not to call set_task_cpu() on a blocking task we need
+ 	 * to rely on ttwu() to place the task on a valid ->cpus_ptr
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 35cc3d45e970..e31ad104232c 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -2730,6 +2730,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
+ {
+ 	return pick_task_dl(rq);
+ }
++
++int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cpu)
++{
++	unsigned int best_score = UINT_MAX;
++	bool have_best = false;
++	int best_cpu = cpu;
++	int candidate;
++
++	for_each_cpu(candidate, p->cpus_ptr) {
++		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
++		struct rq *vrq;
++		unsigned int score;
++
++		if (!server)
++			continue;
++
++		if (!dl_task_fits_capacity(p, candidate))
++			continue;
++
++		vrq = READ_ONCE(server->vrq);
++		if (!vrq)
++			continue;
++
++		score = READ_ONCE(vrq->dl.dl_nr_running) + tg_server_penalty(server);
++
++		if (!have_best || score < best_score ||
++		    (score == best_score && candidate == cpu)) {
++			best_score = score;
++			best_cpu = candidate;
++			have_best = true;
++		}
++	}
++
++	return have_best ? best_cpu : cpu;
++}
+ #endif
+ 
+ static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index beeec3dc7aaa..d4115679f948 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -8899,6 +8899,38 @@ struct task_struct *tg_server_pick_fair_task(struct rq *rq)
+ {
+ 	return pick_task_fair(rq);
+ }
++
++int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int cpu)
++{
++	unsigned int best_score = UINT_MAX;
++	int best_cpu = cpu;
++	bool have_best = false;
++	int candidate;
++
++	for_each_cpu(candidate, p->cpus_ptr) {
++		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
++		struct rq *vrq;
++		unsigned int score;
++
++		if (!server)
++			continue;
++
++		vrq = READ_ONCE(server->vrq);
++		if (!vrq)
++			continue;
++
++		score = READ_ONCE(vrq->nr_running) + tg_server_penalty(server);
++
++		if (!have_best || score < best_score ||
++		    (score == best_score && candidate == cpu)) {
++			best_score = score;
++			best_cpu = candidate;
++			have_best = true;
++		}
++	}
++
++	return have_best ? best_cpu : cpu;
++}
+ #endif
+ 
+ static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index d6bca40acf22..03144dd54343 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -1756,10 +1756,69 @@ static struct task_struct *pick_task_rt(struct rq *rq)
+ }
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
++
++#ifdef CONFIG_UCLAMP_TASK
++static inline bool tg_rt_task_fits_capacity(struct task_struct *p, int cpu)
++{
++	unsigned int min_cap;
++	unsigned int max_cap;
++	unsigned int cpu_cap;
++
++	if (!sched_asym_cpucap_active())
++		return true;
++
++	min_cap = uclamp_eff_value(p, UCLAMP_MIN);
++	max_cap = uclamp_eff_value(p, UCLAMP_MAX);
++	cpu_cap = arch_scale_cpu_capacity(cpu);
++
++	return cpu_cap >= min(min_cap, max_cap);
++}
++#else
++static inline bool tg_rt_task_fits_capacity(struct task_struct *p, int cpu)
++{
++	return true;
++}
++#endif
++
+ struct task_struct *tg_server_pick_rt_task(struct rq *rq)
+ {
+ 	return pick_task_rt(rq);
+ }
++
++int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cpu)
++{
++	unsigned int best_score = UINT_MAX;
++	int best_cpu = cpu;
++	bool have_best = false;
++	int candidate;
++
++	for_each_cpu(candidate, p->cpus_ptr) {
++		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
++		struct rq *vrq;
++		unsigned int score;
++
++		if (!server)
++			continue;
++
++		if (!tg_rt_task_fits_capacity(p, candidate))
++			continue;
++
++		vrq = READ_ONCE(server->vrq);
++		if (!vrq)
++			continue;
++
++		score = READ_ONCE(vrq->rt.rt_nr_running) + tg_server_penalty(server);
++
++		if (!have_best || score < best_score ||
++		    (score == best_score && candidate == cpu)) {
++			best_score = score;
++			best_cpu = candidate;
++			have_best = true;
++		}
++	}
++
++	return have_best ? best_cpu : cpu;
++}
+ #endif
+ 
+ static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index ee21f8654457..c6e14a26f672 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -551,6 +551,30 @@ struct task_group {
+ 
+ };
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++extern int tg_server_select_dl_cpu(struct task_struct *p,
++				   struct task_group *tg, int cpu);
++extern int tg_server_select_fair_cpu(struct task_struct *p,
++				     struct task_group *tg, int cpu);
++extern int tg_server_select_rt_cpu(struct task_struct *p,
++				   struct task_group *tg, int cpu);
++
++#define TG_VRQ_ACTIVE_PENALTY		(1U << 20)
++#define TG_VRQ_THROTTLED_PENALTY	(1U << 22)
++
++static inline unsigned int tg_server_penalty(struct sched_dl_entity *server)
++{
++	unsigned int penalty = 0;
++
++	if (server->dl_throttled)
++		penalty += TG_VRQ_THROTTLED_PENALTY;
++	else if (dl_server_active(server))
++		penalty += TG_VRQ_ACTIVE_PENALTY;
++
++	return penalty;
++}
++#endif
++
+ #ifdef CONFIG_GROUP_SCHED_WEIGHT
+ #define ROOT_TASK_GROUP_LOAD	NICE_0_LOAD
+ 
+-- 
+2.43.0
+
