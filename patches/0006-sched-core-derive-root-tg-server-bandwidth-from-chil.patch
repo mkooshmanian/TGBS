@@ -1,0 +1,166 @@
+From f82a549a53484796fc6413ff0f7a3ae665355220 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Wed, 29 Oct 2025 13:56:21 +0100
+Subject: [PATCH 06/19] sched/core: derive root tg server bandwidth from
+ children
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The TG bandwidth server code kept an explicit runtime on root_task_group
+and mixed that value into deadline admission checks. That contradicts the
+idea of the root group as the system-wide reservoir and causes needless
+rejections when only the root’s first-level children consume bandwidth.
+
+Compute the root tg server bandwidth by aggregating direct children,
+reuse that in the deadline overflow/global validation paths, and forbid
+explicit bandwidth programming of the root task group so its capacity
+remains purely implicit.
+---
+ kernel/sched/core.c     | 59 +++++++++++++++++++++++++++++++++++++----
+ kernel/sched/deadline.c |  6 ++---
+ kernel/sched/sched.h    |  1 +
+ 3 files changed, 57 insertions(+), 9 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 5758a2cb622b..90ab955a2e02 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -9202,6 +9202,29 @@ static bool tg_has_tasks(struct task_group *tg, bool active_only)
+ 	return ret;
+ }
+ 
++unsigned long tg_root_bandwidth_sum(void)
++{
++	struct task_group *child;
++	unsigned long sum = 0;
++
++	rcu_read_lock();
++	list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
++		u64 period = READ_ONCE(child->tg_bandwidth.dl_period);
++		u64 runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
++		unsigned long child_bw = to_ratio(period, runtime);
++
++		if (sum + child_bw < sum) {
++			sum = ULONG_MAX;
++			break;
++		}
++
++		sum += child_bw;
++	}
++	rcu_read_unlock();
++
++	return sum;
++}
++
+ static struct task_struct *
+ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+ {
+@@ -9303,6 +9326,32 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+ 	unsigned long total, sum = 0;
+ 	u64 period, runtime, cur_runtime;
+ 
++	if (tg == &root_task_group) {
++		list_for_each_entry_rcu(child, &tg->children, siblings) {
++			u64 child_period = READ_ONCE(child->tg_bandwidth.dl_period);
++			u64 child_runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
++			unsigned long child_bw;
++
++			if (child == d->tg) {
++				child_period = d->period;
++				child_runtime = d->runtime;
++			}
++
++			child_bw = to_ratio(child_period, child_runtime);
++			if (sum + child_bw < sum)
++				return -EINVAL;
++
++			sum += child_bw;
++			if (sum > BW_UNIT)
++				return -EINVAL;
++		}
++
++		if (!tg_check_root_dl_bandwidth(sum))
++			return -EBUSY;
++
++		return 0;
++	}
++
+ 	cur_runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+ 	period = READ_ONCE(tg->tg_bandwidth.dl_period);
+ 	runtime = cur_runtime;
+@@ -9342,9 +9391,6 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+ 			return -EINVAL;
+ 	}
+ 
+-	if (tg == &root_task_group && !tg_check_root_dl_bandwidth(total))
+-		return -EBUSY;
+-
+ 	return 0;
+ }
+ 
+@@ -9366,6 +9412,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+ 	unsigned long flags;
+ 	int ret;
+ 
++	if (tg == &root_task_group)
++		return -EPERM;
++
+ 	/* Disable when runtime is zero; otherwise require a valid period. */
+ 	if (runtime && !period)
+ 		return -EINVAL;
+@@ -10636,13 +10685,13 @@ static struct cftype cpu_files[] = {
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+ 	{
+ 		.name = "runtime_us",
+-		// .flags = CFTYPE_NOT_ON_ROOT,
++		.flags = CFTYPE_NOT_ON_ROOT,
+ 		.read_s64 = cpu_tg_runtime_read,
+ 		.write_s64 = cpu_tg_runtime_write,
+ 	},
+ 	{
+ 		.name = "period_us",
+-		// .flags = CFTYPE_NOT_ON_ROOT,
++		.flags = CFTYPE_NOT_ON_ROOT,
+ 		.read_u64 = cpu_tg_period_read_uint,
+ 		.write_u64 = cpu_tg_period_write_uint,
+ 	},
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index bd8601f57ec7..835b33138b28 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -215,8 +215,7 @@ __dl_overflow(struct dl_bw *dl_b, unsigned long cap, u64 old_bw, u64 new_bw)
+ 	u64 tg_servers_root = 0;
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+-	tg_servers_root = to_ratio(root_task_group.tg_bandwidth.dl_period,
+-				  root_task_group.tg_bandwidth.dl_runtime);
++	tg_servers_root = tg_root_bandwidth_sum();
+ #endif
+ 	return dl_b->bw != -1 &&
+ 	       cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw
+@@ -3123,8 +3122,7 @@ int sched_dl_global_validate(void)
+ 	unsigned long flags;
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+-	tg_servers_root = to_ratio(root_task_group.tg_bandwidth.dl_period,
+-				  root_task_group.tg_bandwidth.dl_runtime);
++	tg_servers_root = tg_root_bandwidth_sum();
+ #endif
+ 
+ 	/*
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 16dbe8850379..9c26a8e157fe 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -577,6 +577,7 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+ 		struct sched_dl_entity *server, int cpu,
+ 		struct sched_dl_entity *parent);
+ extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
++extern unsigned long tg_root_bandwidth_sum(void);
+ extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
+ extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
+ extern long sched_group_tg_runtime(struct task_group *tg);
+-- 
+2.43.0
+

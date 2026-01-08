@@ -1,0 +1,35 @@
+From ce4d09db12c1782ae431a31fa4455dce1eb2a8fd Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Sun, 30 Nov 2025 14:13:23 +0100
+Subject: [PATCH 17/19] sched/deadline: revive TG servers throttled while
+ stopped
+
+Handle TG server throttling after it was stopped because its vrq was empty.
+When the CBS timer fires and the server is inactive, replenish the runtime
+and bail out (sched-out case) instead of returning early. This avoids leaving
+an inactive server on the DL rq with negative runtime and fixes the start/
+unthrottle deadlock observed in TG bandwidth servers.
+---
+ kernel/sched/deadline.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index d9661472726d..fc240774300c 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -1409,6 +1409,12 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_
+ 		if (!dl_se->dl_runtime)
+ 			return HRTIMER_NORESTART;
+ 
++		if (!dl_server_active(dl_se)) {
++			/* Throttled while stopped (sched-out case): just refill. */
++			replenish_dl_entity(dl_se);
++			return HRTIMER_NORESTART;
++		}
++
+ 		if (dl_se->dl_defer_armed) {
+ 			/*
+ 			 * First check if the server could consume runtime in background.
+-- 
+2.43.0
+

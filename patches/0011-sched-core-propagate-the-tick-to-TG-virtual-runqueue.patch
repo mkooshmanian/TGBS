@@ -1,0 +1,165 @@
+From 284c81a976e795f5812d3babaec078ce384640df Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Mon, 8 Dec 2025 15:07:02 +0100
+Subject: [PATCH 11/19] sched/core: propagate the tick to TG virtual runqueues
+
+Tasks under a TG bandwidth server run on a virtual rq, but the tick only hit
+the physical rq, breaking vruntime/slice accounting. Forward both the regular
+tick and hrtick/remote tick to the VRQ (locking it) so the running task
+receives its task_tick and preemption/accounting stay consistent without
+changing the existing paths otherwise.
+---
+ kernel/sched/core.c | 101 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 101 insertions(+)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index a89ffed55cb9..8c9e9b459036 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -870,12 +870,40 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
+ {
+ 	struct rq *rq = container_of(timer, struct rq, hrtick_timer);
+ 	struct rq_flags rf;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct task_struct *curr = rq->curr;
++	struct rq *curr_vrq;
++#endif
+ 
+ 	WARN_ON_ONCE(cpu_of(rq) != smp_processor_id());
+ 
+ 	rq_lock(rq, &rf);
+ 	update_rq_clock(rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	curr_vrq = tg_server_rq_of_task(rq, curr);
++	if (curr_vrq != rq) {
++		struct rq_flags vrf;
++
++		tg_server_vrq_lock(curr_vrq, &vrf);
++		rq->donor->sched_class->task_tick(curr_vrq, rq->curr, 1);
++		tg_server_vrq_unlock(curr_vrq, &vrf);
++	} else {
++		rq->donor->sched_class->task_tick(rq, rq->curr, 1);
++	}
++
++	/* Forward tick to the virtual rq so the TG server stays in sync. */
++	if (curr_vrq != rq) {
++		struct rq_flags vrf;
++
++		tg_server_vrq_lock(curr_vrq, &vrf);
++		curr->sched_class->task_tick(curr_vrq, curr, 1);
++		if (curr_vrq->cfs.nr_queued > 1)
++			resched_curr(rq);
++		tg_server_vrq_unlock(curr_vrq, &vrf);
++	}
++#else
+ 	rq->donor->sched_class->task_tick(rq, rq->curr, 1);
++#endif
+ 	rq_unlock(rq, &rf);
+ 
+ 	return HRTIMER_NORESTART;
+@@ -5678,6 +5706,7 @@ void sched_tick(void)
+ 	int cpu = smp_processor_id();
+ 	struct rq *rq = cpu_rq(cpu);
+ 	/* accounting goes to the donor task */
++	struct task_struct *curr;
+ 	struct task_struct *donor;
+ 	struct rq_flags rf;
+ 	unsigned long hw_pressure;
+@@ -5690,6 +5719,7 @@ void sched_tick(void)
+ 
+ 	rq_lock(rq, &rf);
+ 	donor = rq->donor;
++	curr = rq->curr;
+ 
+ 	psi_account_irqtime(rq, donor, NULL);
+ 
+@@ -5700,7 +5730,57 @@ void sched_tick(void)
+ 	if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
+ 		resched_curr(rq);
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	{
++		struct rq *donor_vrq = tg_server_rq_of_task(rq, donor);
++
++		if (donor_vrq != rq) {
++			struct rq_flags vrf;
++
++			tg_server_vrq_lock(donor_vrq, &vrf);
++			donor->sched_class->task_tick(donor_vrq, donor, 0);
++			tg_server_vrq_unlock(donor_vrq, &vrf);
++		} else {
++			donor->sched_class->task_tick(rq, donor, 0);
++		}
++	}
++#else
+ 	donor->sched_class->task_tick(rq, donor, 0);
++#endif
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	/*
++	 * Tasks executing under a TG bandwidth server run on a virtual rq. They
++	 * still consume CPU time on the physical rq, so forward the tick to the
++	 * virtual rq to keep vruntime accounting and slice protection in sync.
++	 */
++	{
++		struct rq *curr_vrq;
++		bool curr_tick_handled = (curr == donor);
++
++		curr_vrq = tg_server_rq_of_task(rq, curr);
++
++		if (curr_vrq != rq) {
++			struct rq_flags vrf;
++
++			tg_server_vrq_lock(curr_vrq, &vrf);
++			curr->sched_class->task_tick(curr_vrq, curr, 0);
++
++			if (curr_vrq->cfs.nr_queued > 1)
++				resched_curr(rq);
++
++			tg_server_vrq_unlock(curr_vrq, &vrf);
++
++			curr_tick_handled = true;
++		}
++
++		if (!curr_tick_handled && curr != donor)
++			curr->sched_class->task_tick(rq, curr, 0);
++	}
++#else
++	if (curr != donor)
++		curr->sched_class->task_tick(rq, curr, 0);
++#endif
+ 	if (sched_feat(LATENCY_WARN))
+ 		resched_latency = cpu_resched_latency(rq);
+ 	calc_global_load_tick(rq);
+@@ -5797,7 +5877,28 @@ static void sched_tick_remote(struct work_struct *work)
+ 				u64 delta = rq_clock_task(rq) - curr->se.exec_start;
+ 				WARN_ON_ONCE(delta > (u64)NSEC_PER_SEC * 3);
+ 			}
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++			{
++				struct rq *curr_vrq;
++
++				curr_vrq = tg_server_rq_of_task(rq, curr);
++				if (curr_vrq != rq) {
++					struct rq_flags vrf;
++
++					tg_server_vrq_lock(curr_vrq, &vrf);
++					curr->sched_class->task_tick(curr_vrq, curr, 0);
++
++					if (curr_vrq->cfs.nr_queued > 1)
++						resched_curr(rq);
++
++					tg_server_vrq_unlock(curr_vrq, &vrf);
++				} else {
++					curr->sched_class->task_tick(rq, curr, 0);
++				}
++			}
++#else
+ 			curr->sched_class->task_tick(rq, curr, 0);
++#endif
+ 
+ 			calc_load_nohz_remote(rq);
+ 		}
+-- 
+2.43.0
+

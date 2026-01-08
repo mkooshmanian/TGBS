@@ -1,0 +1,83 @@
+From 962ca95b631bbf8daaba5d1eed22e74fc92d2cc1 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Sun, 16 Nov 2025 14:25:54 +0100
+Subject: [PATCH 18/19] schd/tgbs: lock virtual rq for class change callbacks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Lock the task’s virtual rq before calling switching_to()/switched_*()/
+prio_changed when TG_BANDWIDTH_SERVER is active, so the callbacks see the
+correct rq and update_load_avg() assertions hold. This matches how we already
+handle enqueue/dequeue and fixes lockdep warnings triggered when multi-core
+groups manipulate tasks on non-root VRQs.
+---
+ kernel/sched/core.c | 40 ++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index c5db2ce7ad27..b3c5d4fa6ea1 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2373,8 +2373,24 @@ inline int task_curr(const struct task_struct *p)
+ void check_class_changing(struct rq *rq, struct task_struct *p,
+ 			  const struct sched_class *prev_class)
+ {
++	struct rq *class_rq = rq;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct rq_flags vrf = { };
++	bool locked = false;
++
++	class_rq = tg_server_rq_of_task(rq, p);
++	if (class_rq != rq) {
++		tg_server_vrq_lock(class_rq, &vrf);
++		locked = true;
++	}
++#endif
+ 	if (prev_class != p->sched_class && p->sched_class->switching_to)
+-		p->sched_class->switching_to(rq, p);
++		p->sched_class->switching_to(class_rq, p);
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (locked)
++		tg_server_vrq_unlock(class_rq, &vrf);
++#endif
+ }
+ 
+ /*
+@@ -2388,13 +2404,29 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
+ 			 const struct sched_class *prev_class,
+ 			 int oldprio)
+ {
++	struct rq *class_rq = rq;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct rq_flags vrf = { };
++	bool locked = false;
++
++	class_rq = tg_server_rq_of_task(rq, p);
++	if (class_rq != rq) {
++		tg_server_vrq_lock(class_rq, &vrf);
++		locked = true;
++	}
++#endif
+ 	if (prev_class != p->sched_class) {
+ 		if (prev_class->switched_from)
+-			prev_class->switched_from(rq, p);
++			prev_class->switched_from(class_rq, p);
+ 
+-		p->sched_class->switched_to(rq, p);
++		p->sched_class->switched_to(class_rq, p);
+ 	} else if (oldprio != p->prio || dl_task(p))
+-		p->sched_class->prio_changed(rq, p, oldprio);
++		p->sched_class->prio_changed(class_rq, p, oldprio);
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (locked)
++		tg_server_vrq_unlock(class_rq, &vrf);
++#endif
+ }
+ 
+ void wakeup_preempt(struct rq *rq, struct task_struct *p, int flags)
+-- 
+2.43.0
+

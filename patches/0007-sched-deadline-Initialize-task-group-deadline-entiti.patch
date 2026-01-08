@@ -1,0 +1,216 @@
+From 121e257d54163e1f8fcd95af7305ca891d1dab57 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Tue, 4 Nov 2025 11:13:32 +0100
+Subject: [PATCH 07/19] sched/deadline: Initialize task-group deadline entities
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Align TG_BANDWIDTH_SERVER with the HCBS groundwork by properly
+wiring each task group’s deadline entity, mirroring the dl_init_tg
+logic and supporting deeper RT cgroup hierarchies so nested groups
+propagate their bandwidth state.
+
+Inspired by HCBS subpatches:
+
+sched/deadline: Add dl_init_tg
+sched/deadline: Allow deeper hierarchies of RT cgroups
+Based-on-a-patch-by: Luca Abeni luca.abeni@santannapisa.it
+Co-developed-by: Alessio Balsini a.balsini@sssup.it
+Co-developed-by: Andrea Parri parri.andrea@gmail.com
+Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
+---
+ kernel/sched/core.c     | 29 ++++++++++++-
+ kernel/sched/deadline.c | 96 +++++++++++++++++++++++++++++++++++++++++
+ kernel/sched/sched.h    |  2 +
+ 3 files changed, 125 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 90ab955a2e02..3eb3874d0f36 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -9179,7 +9179,7 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+ 	return 1;
+ }
+ 
+-static bool tg_has_tasks(struct task_group *tg, bool active_only)
++bool tg_has_tasks(struct task_group *tg, bool active_only)
+ {
+ 	struct css_task_iter it;
+ 	struct task_struct *task;
+@@ -9298,11 +9298,29 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+ void free_tg_bandwidth_server(struct task_group *tg)
+ {
+ 	int cpu;
++	unsigned long flags;
+ 
+ 	if (!tg->tg_server)
+ 		return;
+ 
+ 	for_each_possible_cpu(cpu) {
++		if (!tg->tg_server[cpu])
++			continue;
++
++		/*
++		 * Shutdown the dl_server and free it
++		 *
++		 * Since the dl timer is going to be cancelled,
++		 * we risk to never decrease the running bw...
++		 * Fix this issue by changing the group runtime
++		 * to 0 immediately before freeing it.
++		 */
++		if (tg->tg_server[cpu]->dl_runtime)
++			init_tg_dl_se(tg, cpu, 0, tg->tg_server[cpu]->dl_period);
++
++		raw_spin_rq_lock_irqsave(cpu_rq(cpu), flags);
++		hrtimer_cancel(&tg->tg_server[cpu]->dl_timer);
++		raw_spin_rq_unlock_irqrestore(cpu_rq(cpu), flags);
+ 		kfree(tg->tg_server[cpu]);
+ 		tg->tg_server[cpu] = NULL;
+ 	}
+@@ -9410,7 +9428,7 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+ {
+ 	struct dl_bandwidth *dl_bw = &tg->tg_bandwidth;
+ 	unsigned long flags;
+-	int ret;
++	int cpu, ret;
+ 
+ 	if (tg == &root_task_group)
+ 		return -EPERM;
+@@ -9434,6 +9452,13 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+ 	dl_bw->dl_runtime = runtime;
+ 	raw_spin_unlock_irqrestore(&dl_bw->dl_runtime_lock, flags);
+ 
++	if (tg == &root_task_group)
++		return 0;
++
++	for_each_possible_cpu(cpu) {
++		init_tg_dl_se(tg, cpu, runtime, period);
++	}
++
+ 	return ret;
+ }
+ 
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 835b33138b28..3feb75e6f041 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -355,6 +355,102 @@ static void dl_change_utilization(struct task_struct *p, u64 new_bw)
+ 	dl_rq_change_utilization(task_rq(p), &p->dl, new_bw);
+ }
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++static bool is_active_sched_group(struct task_group *tg)
++{
++	struct task_group *child;
++	bool is_active = 1;
++
++	// if there are no children, this is a leaf group, thus it is active
++	list_for_each_entry_rcu(child, &tg->children, siblings) {
++		if (child->tg_bandwidth.dl_runtime > 0) {
++			is_active = 0;
++		}
++	}
++	return is_active;
++}
++
++static bool sched_group_has_active_siblings(struct task_group *tg)
++{
++	struct task_group *sibling;
++	bool has_active = false;
++
++	if (!tg->parent)
++		return false;
++
++	rcu_read_lock();
++	list_for_each_entry_rcu(sibling, &tg->parent->children, siblings) {
++		if (sibling == tg)
++			continue;
++
++		if (READ_ONCE(sibling->tg_bandwidth.dl_runtime)) {
++			has_active = true;
++			break;
++		}
++	}
++	rcu_read_unlock();
++
++	return has_active;
++}
++
++void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
++{
++	struct sched_dl_entity *dl_se;
++	struct rq *rq;
++	struct dl_rq *dl_rq;
++	struct sched_dl_entity *parent;
++	bool has_active_tasks, is_active_group;
++	u64 old_runtime;
++	unsigned long new_bw;
++
++	if (!tg->tg_server)
++		return;
++
++	dl_se = tg->tg_server[cpu];
++	if (!dl_se)
++		return;
++
++	rq = dl_se->rq;
++	dl_rq = dl_rq_of_se(dl_se);
++	is_active_group = is_active_sched_group(tg);
++	has_active_tasks = tg_has_tasks(tg, true);
++
++	raw_spin_rq_lock_irq(rq);
++	update_rq_clock(rq);
++	dl_server_stop(dl_se);
++
++	old_runtime = dl_se->dl_runtime;
++	new_bw = to_ratio(period, runtime);
++
++	if (is_active_group)
++		dl_rq_change_utilization(rq, dl_se, new_bw);
++
++	dl_se->dl_runtime = runtime;
++	dl_se->dl_deadline = period;
++	dl_se->dl_period = period;
++	dl_se->runtime = 0;
++	dl_se->deadline = 0;
++
++	dl_se->dl_bw = new_bw;
++	dl_se->dl_density = new_bw;
++
++	parent = dl_se->parent;
++	/* Root task group has no explicit server entry, skip parent bandwidth tweaks. */
++	if (tg->parent && tg->parent != &root_task_group && parent &&
++	    !sched_group_has_active_siblings(tg)) {
++		if (!runtime && old_runtime)
++			__add_rq_bw(parent->dl_bw, dl_rq);
++		else if (runtime && !old_runtime)
++			__sub_rq_bw(parent->dl_bw, dl_rq);
++	}
++
++	if (has_active_tasks)
++		dl_server_start(dl_se);
++
++	raw_spin_rq_unlock_irq(rq);
++}
++#endif
++
+ static void __dl_clear_params(struct sched_dl_entity *dl_se);
+ 
+ /*
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 9c26a8e157fe..3dc8dcc42fa5 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -577,6 +577,8 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+ 		struct sched_dl_entity *server, int cpu,
+ 		struct sched_dl_entity *parent);
+ extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
++extern void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period);
++extern bool tg_has_tasks(struct task_group *tg, bool active_only);
+ extern unsigned long tg_root_bandwidth_sum(void);
+ extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
+ extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
+-- 
+2.43.0
+

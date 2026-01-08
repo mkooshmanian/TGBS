@@ -1,0 +1,354 @@
+From 9b69e4161dd5067f04c71a2ec9f7726b6810e45c Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Wed, 26 Nov 2025 10:10:43 +0100
+Subject: [PATCH 19/19] sched: add TG bandwidth server tracepoints
+
+Add tracepoints for TG bandwidth server start/stop, throttle/unthrottle, runtime
+accounting, and pick decisions to ease debugging with cgroup context.
+---
+ include/trace/events/sched.h | 168 +++++++++++++++++++++++++++++++++++
+ kernel/sched/core.c          |  72 ++++++++++++++-
+ kernel/sched/deadline.c      |  12 ++-
+ kernel/sched/sched.h         |   2 +
+ 4 files changed, 251 insertions(+), 3 deletions(-)
+
+diff --git a/include/trace/events/sched.h b/include/trace/events/sched.h
+index 7b2645b50e78..1168899e088c 100644
+--- a/include/trace/events/sched.h
++++ b/include/trace/events/sched.h
+@@ -826,6 +826,174 @@ TRACE_EVENT(sched_wake_idle_without_ipi,
+ 	TP_printk("cpu=%d", __entry->cpu)
+ );
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++DECLARE_EVENT_CLASS(sched_tg_server_template,
++
++	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++		 int cpu, int vrq_cpu, u64 cgrp_id),
++
++	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id),
++
++	TP_STRUCT__entry(
++		__field(u64, cgrp_id)
++		__field(void *, tg)
++		__field(void *, server)
++		__field(int, cpu)
++		__field(int, vrq_cpu)
++		__field(u64, dl_runtime)
++		__field(u64, dl_period)
++		__field(s64, runtime)
++		__field(u64, deadline)
++	),
++
++	TP_fast_assign(
++		__entry->cgrp_id = cgrp_id;
++		__entry->tg = tg;
++		__entry->server = server;
++		__entry->cpu = cpu;
++		__entry->vrq_cpu = vrq_cpu;
++		__entry->dl_runtime = server ? server->dl_runtime : 0;
++		__entry->dl_period = server ? server->dl_period : 0;
++		__entry->runtime = server ? server->runtime : 0;
++		__entry->deadline = server ? server->deadline : 0;
++	),
++
++	TP_printk("cgrp_id=%llu tg=%p server=%p cpu=%d vrq_cpu=%d runtime=%lld dl_runtime=%llu dl_period=%llu deadline=%llu",
++		  (unsigned long long)__entry->cgrp_id, __entry->tg,
++		  __entry->server, __entry->cpu, __entry->vrq_cpu,
++		  (long long)__entry->runtime,
++		  (unsigned long long)__entry->dl_runtime,
++		  (unsigned long long)__entry->dl_period,
++		  (unsigned long long)__entry->deadline)
++);
++
++DEFINE_EVENT(sched_tg_server_template, sched_tg_server_start,
++
++	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++		 int cpu, int vrq_cpu, u64 cgrp_id),
++
++	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
++);
++
++DEFINE_EVENT(sched_tg_server_template, sched_tg_server_stop,
++
++	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++		 int cpu, int vrq_cpu, u64 cgrp_id),
++
++	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
++);
++
++DEFINE_EVENT(sched_tg_server_template, sched_tg_server_throttle,
++
++	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++		 int cpu, int vrq_cpu, u64 cgrp_id),
++
++	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
++);
++
++DEFINE_EVENT(sched_tg_server_template, sched_tg_server_unthrottle,
++
++	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++		 int cpu, int vrq_cpu, u64 cgrp_id),
++
++	TP_ARGS(tg, server, cpu, vrq_cpu, cgrp_id)
++);
++
++TRACE_EVENT(sched_tg_server_runtime,
++
++	TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++		 struct task_struct *p, int cpu, int vrq_cpu,
++		 s64 delta_exec, s64 runtime_before, u64 cgrp_id),
++
++	TP_ARGS(tg, server, p, cpu, vrq_cpu, delta_exec, runtime_before,
++		cgrp_id),
++
++	TP_STRUCT__entry(
++		__field(u64, cgrp_id)
++		__field(void *, tg)
++		__field(void *, server)
++		__field(pid_t, pid)
++		__field(int, cpu)
++		__field(int, vrq_cpu)
++		__field(s64, delta_exec)
++		__field(s64, runtime_before)
++		__field(s64, runtime_after)
++		__field(u64, dl_runtime)
++		__field(u64, dl_period)
++		__field(u64, deadline)
++	),
++
++	TP_fast_assign(
++		__entry->cgrp_id = cgrp_id;
++		__entry->tg = tg;
++		__entry->server = server;
++		__entry->pid = p ? task_pid_nr(p) : 0;
++		__entry->cpu = cpu;
++		__entry->vrq_cpu = vrq_cpu;
++		__entry->delta_exec = delta_exec;
++		__entry->runtime_before = runtime_before;
++		__entry->runtime_after = server ? server->runtime : 0;
++		__entry->dl_runtime = server ? server->dl_runtime : 0;
++		__entry->dl_period = server ? server->dl_period : 0;
++		__entry->deadline = server ? server->deadline : 0;
++	),
++
++	TP_printk("cgrp_id=%llu tg=%p server=%p pid=%d cpu=%d vrq_cpu=%d delta=%lld runtime_before=%lld runtime_after=%lld dl_runtime=%llu dl_period=%llu deadline=%llu",
++		  (unsigned long long)__entry->cgrp_id, __entry->tg,
++		  __entry->server, __entry->pid, __entry->cpu,
++		  __entry->vrq_cpu, (long long)__entry->delta_exec,
++		  (long long)__entry->runtime_before,
++		  (long long)__entry->runtime_after,
++		  (unsigned long long)__entry->dl_runtime,
++			  (unsigned long long)__entry->dl_period,
++			  (unsigned long long)__entry->deadline)
++	);
++
++TRACE_EVENT(sched_tg_server_pick,
++
++		TP_PROTO(struct task_group *tg, struct sched_dl_entity *server,
++			 struct task_struct *prev, struct task_struct *next,
++			 int cpu, int vrq_cpu, u64 cgrp_id),
++
++		TP_ARGS(tg, server, prev, next, cpu, vrq_cpu, cgrp_id),
++
++	TP_STRUCT__entry(
++		__field(u64, cgrp_id)
++		__field(void *, tg)
++		__field(void *, server)
++		__field(void *, prev)
++		__field(pid_t, prev_pid)
++		__field(int, prev_prio)
++		__field(void *, next)
++		__field(pid_t, next_pid)
++		__field(int, next_prio)
++		__field(int, cpu)
++		__field(int, vrq_cpu)
++	),
++
++	TP_fast_assign(
++			__entry->cgrp_id   = cgrp_id;
++		__entry->tg        = tg;
++		__entry->server    = server;
++		__entry->prev      = prev;
++		__entry->prev_pid  = prev ? prev->pid : -1;
++		__entry->prev_prio = prev ? prev->prio : -1;
++		__entry->next      = next;
++		__entry->next_pid  = next ? next->pid : -1;
++		__entry->next_prio = next ? next->prio : -1;
++		__entry->cpu       = cpu;
++		__entry->vrq_cpu   = vrq_cpu;
++	),
++
++	TP_printk("cgrp_id=%llu tg=%p server=%p prev=%p pid=%d prio=%d next=%p pid=%d prio=%d cpu=%d vrq_cpu=%d",
++		(unsigned long long)__entry->cgrp_id,
++		__entry->tg, __entry->server,
++		__entry->prev, __entry->prev_pid, __entry->prev_prio,
++		__entry->next, __entry->next_pid, __entry->next_prio,
++		__entry->cpu, __entry->vrq_cpu)
++);
++#endif /* CONFIG_TG_BANDWIDTH_SERVER */
++
+ /*
+  * Following tracepoints are not exported in tracefs and provide hooking
+  * mechanisms only for testing and debugging purposes.
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index b3c5d4fa6ea1..a1c74f7fa2c2 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2184,8 +2184,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
+ 
+ 	BUG_ON(vrq != server->vrq);
+ 
+-	if (READ_ONCE(vrq->nr_running) == 1)
++	if (READ_ONCE(vrq->nr_running) == 1) {
++		bool was_active = dl_server_active(server);
++
+ 		dl_server_start(server);
++		if (!was_active && dl_server_active(server))
++			trace_sched_tg_server_start(tg, server,
++						    server->rq ? cpu_of(server->rq) : cpu,
++						    cpu,
++						    cgroup_id(tg->css.cgroup));
++	}
+ }
+ 
+ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2204,8 +2212,16 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+ 
+ 	BUG_ON(vrq != server->vrq);
+ 
+-	if (!READ_ONCE(vrq->nr_running))
++	if (!READ_ONCE(vrq->nr_running)) {
++		bool was_active = dl_server_active(server);
++
+ 		dl_server_stop(server);
++		if (was_active && !dl_server_active(server))
++			trace_sched_tg_server_stop(tg, server,
++						   server->rq ? cpu_of(server->rq) : cpu,
++						   cpu,
++						   cgroup_id(tg->css.cgroup));
++	}
+ }
+ 
+ void tg_server_account_runtime(struct rq *rq,
+@@ -2228,7 +2244,46 @@ void tg_server_account_runtime(struct rq *rq,
+ 	if (!server)
+ 		return;
+ 
++	s64 runtime_before = server->runtime;
++
+ 	dl_server_update(server, delta_exec);
++
++	trace_sched_tg_server_runtime(tg, server, p, cpu,
++				      server->vrq ? cpu_of(server->vrq) : cpu,
++				      delta_exec, runtime_before,
++				      cgroup_id(tg->css.cgroup));
++}
++
++void tg_server_handle_throttle(struct sched_dl_entity *server)
++{
++	struct rq *rq;
++
++	if (!server)
++		return;
++
++	rq = server->rq;
++	if (!rq || server == &rq->fair_server || !server->tg)
++		return;
++
++	trace_sched_tg_server_throttle(server->tg, server, cpu_of(rq),
++				       server->vrq ? cpu_of(server->vrq) : -1,
++				       cgroup_id(server->tg->css.cgroup));
++}
++
++void tg_server_handle_unthrottle(struct sched_dl_entity *server)
++{
++	struct rq *rq;
++
++	if (!server)
++		return;
++
++	rq = server->rq;
++	if (!rq || server == &rq->fair_server || !server->tg)
++		return;
++
++	trace_sched_tg_server_unthrottle(server->tg, server, cpu_of(rq),
++					 server->vrq ? cpu_of(server->vrq) : -1,
++					 cgroup_id(server->tg->css.cgroup));
+ }
+ #endif
+ 
+@@ -9573,6 +9628,7 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+ 	struct task_struct *p;
+ 	struct rq_flags vrf;
+ 	struct rq *parent_rq;
++	struct task_struct *prev, *next;
+ 
+ 	if (WARN_ON_ONCE(!dl_se))
+ 		return NULL;
+@@ -9597,6 +9653,18 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+ 	p = tg_server_pick_fair_task(vrq);
+ 
+ out:
++	prev = rcu_dereference_protected(vrq->curr,
++					 lockdep_is_held(&vrq->__lock));
++	if (!prev)
++		prev = vrq->idle;
++
++	next = p ? p : vrq->idle;
++
++	trace_sched_tg_server_pick(dl_se->tg, dl_se, prev, next,
++				   cpu_of(parent_rq),
++				   vrq ? cpu_of(vrq) : -1,
++				   cgroup_id(dl_se->tg->css.cgroup));
++
+ 	tg_server_vrq_unlock(vrq, &vrf);
+ 	return p;
+ }
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index fc240774300c..35cc3d45e970 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -1080,8 +1080,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
+ 
+ 	if (dl_se->dl_yielded)
+ 		dl_se->dl_yielded = 0;
+-	if (dl_se->dl_throttled)
++	if (dl_se->dl_throttled) {
+ 		dl_se->dl_throttled = 0;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		if (dl_server(dl_se))
++			tg_server_handle_unthrottle(dl_se);
++#endif
++	}
+ 
+ 	/*
+ 	 * If this is the replenishment of a deferred reservation,
+@@ -1742,6 +1747,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64
+ 	if (dl_runtime_exceeded(dl_se) || dl_se->dl_yielded) {
+ 		dl_se->dl_throttled = 1;
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		if (dl_server(dl_se))
++			tg_server_handle_throttle(dl_se);
++#endif
++
+ 		/* If requested, inform the user about runtime overruns. */
+ 		if (dl_runtime_exceeded(dl_se) &&
+ 		    (dl_se->flags & SCHED_FLAG_DL_OVERRUN))
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 8282e4178097..56b08125731b 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -431,6 +431,8 @@ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64
+ extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
+ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
+ extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
++extern void tg_server_handle_throttle(struct sched_dl_entity *server);
++extern void tg_server_handle_unthrottle(struct sched_dl_entity *server);
+ #endif
+ 
+ extern void dl_server_update_idle_time(struct rq *rq,
+-- 
+2.43.0
+
