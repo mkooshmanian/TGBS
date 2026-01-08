@@ -1,0 +1,438 @@
+From c7bd0401bcfae8c607f33e6ce6fe315ee145b823 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Thu, 11 Dec 2025 17:06:19 +0100
+Subject: [PATCH 22/22] sched/tgbs: add throttle/unthrottle support for TG
+ servers via irq_work
+
+Add the TG bandwidth server balancing logic: when a server throttles we push
+its runnable tasks to sibling VRQs, and when it replenishes we pull work back
+(or stop the server) so runnable load is shared across VRQs/servers. We run
+these actions via per-rq irq_work instead of the existing balance callbacks
+because throttling/unthrottling happens while the DL tick/hrtimer still owns
+the VRQ lock and marks the task as current; migrating it there would corrupt
+enqueue/dequeue state and create lock dependency problems. The irq_work drains
+pending actions in a safe context, resets the VRQ to idle, and migrates tasks
+with both the virtual and physical rq locks held, giving us the needed TG
+balancing behaviour without violating scheduler locking rules.
+---
+ include/linux/sched.h |   4 +
+ kernel/sched/core.c   | 283 +++++++++++++++++++++++++++++++++++++++---
+ kernel/sched/sched.h  |   5 +
+ 3 files changed, 278 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index ee1a20f4b87c..1b60f743fc64 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -749,6 +749,10 @@ struct sched_dl_entity {
+ 	struct task_group		*tg;
+ 	struct rq				*vrq;
+ 	struct sched_dl_entity	*parent;
++
++	struct llist_node		tgbs_irq_node;
++	atomic_t				tgbs_irq_pending;
++	atomic_long_t			tgbs_irq_actions;
+ #endif
+ 
+ #ifdef CONFIG_RT_MUTEXES
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index b93fd8cbed9a..94e7db09c8e1 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -37,6 +37,8 @@
+ #include <linux/sched/nohz.h>
+ #include <linux/sched/rseq_api.h>
+ #include <linux/sched/rt.h>
++#include <linux/irq_work.h>
++#include <linux/llist.h>
+ 
+ #include <linux/blkdev.h>
+ #include <linux/context_tracking.h>
+@@ -2080,6 +2082,10 @@ static inline void init_uclamp(void) { }
+ #endif /* !CONFIG_UCLAMP_TASK */
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
++
++#define TG_SERVER_ACTION_UNTHROTTLE	BIT(0)
++#define TG_SERVER_ACTION_THROTTLE	BIT(1)
++
+ static void __balance_callbacks(struct rq *rq);
+ 
+ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
+@@ -2198,10 +2204,22 @@ tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
+ 	return tg_server_pull_fair_task_from_cpu(src_rq, dst_cpu);
+ }
+ 
+-static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
++static bool __tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq,
++				  bool dst_locked)
+ {
+ 	int dst_cpu = cpu_of(dst_vrq);
+ 	int cpu;
++	bool pulled = false;
++	bool locked_here = false;
++
++	if (!dst_locked) {
++		if (!raw_spin_rq_trylock(dst_vrq))
++			return false;
++		locked_here = true;
++	}
++
++	if (READ_ONCE(dst_vrq->nr_running))
++		goto out_unlock;
+ 
+ 	for_each_possible_cpu(cpu) {
+ 		struct sched_dl_entity *server;
+@@ -2230,8 +2248,10 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+ 		if (!raw_spin_rq_trylock(src_phys))
+ 			continue;
+ 
+-		if (!raw_spin_rq_trylock(src_vrq))
+-			goto unlock_phys;
++		if (!raw_spin_rq_trylock(src_vrq)) {
++			raw_spin_rq_unlock(src_phys);
++			continue;
++		}
+ 
+ 		p = tg_server_pull_task_from_cpu(src_vrq, dst_cpu);
+ 		if (p) {
+@@ -2239,12 +2259,83 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+ 			update_rq_clock(dst_vrq);
+ 
+ 			move_queued_task_locked(src_vrq, dst_vrq, p);
++			pulled = true;
+ 		}
+ 
+ 		raw_spin_rq_unlock(src_vrq);
+-unlock_phys:
+ 		raw_spin_rq_unlock(src_phys);
+ 
++		if (pulled)
++			break;
++	}
++
++out_unlock:
++	if (locked_here)
++		raw_spin_rq_unlock(dst_vrq);
++
++	return pulled;
++}
++
++static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
++{
++	return __tg_server_pull_task(tg, dst_vrq, false);
++}
++
++static bool tg_server_push_task(struct task_group *tg, struct rq *src_vrq,
++				bool *retry)
++{
++	int src_cpu = cpu_of(src_vrq);
++	int cpu;
++
++	lockdep_assert_rq_held(src_vrq);
++
++	for_each_possible_cpu(cpu) {
++		struct sched_dl_entity *server;
++		struct rq *dst_vrq;
++		struct rq *dst_phys;
++		struct task_struct *p;
++
++		if (cpu == src_cpu)
++			continue;
++
++		server = READ_ONCE(tg->tg_server[cpu]);
++		if (!server)
++			continue;
++
++		if (server->dl_throttled)
++			continue;
++
++		dst_vrq = READ_ONCE(server->vrq);
++		if (!dst_vrq)
++			continue;
++
++		dst_phys = READ_ONCE(server->rq);
++		if (!dst_phys)
++			continue;
++
++		if (!raw_spin_rq_trylock(dst_phys)) {
++			if (retry)
++				*retry = true;
++			continue;
++		}
++
++		if (!raw_spin_rq_trylock(dst_vrq)) {
++			raw_spin_rq_unlock(dst_phys);
++			if (retry)
++				*retry = true;
++			continue;
++		}
++
++		p = tg_server_pull_task_from_cpu(src_vrq, cpu);
++		if (p) {
++			update_rq_clock(src_vrq);
++			update_rq_clock(dst_vrq);
++			move_queued_task_locked(src_vrq, dst_vrq, p);
++		}
++
++		raw_spin_rq_unlock(dst_vrq);
++		raw_spin_rq_unlock(dst_phys);
++
+ 		if (p)
+ 			return true;
+ 	}
+@@ -2252,6 +2343,151 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+ 	return false;
+ }
+ 
++static void tg_server_queue_action(struct rq *rq,
++				   struct sched_dl_entity *server,
++				   unsigned long action_mask)
++{
++	if (!rq || !action_mask)
++		return;
++
++	atomic_long_fetch_or(action_mask, &server->tgbs_irq_actions);
++
++	if (atomic_xchg(&server->tgbs_irq_pending, 1))
++		return;
++
++	llist_add(&server->tgbs_irq_node, &rq->tgbs_action_list);
++	irq_work_queue(&rq->tgbs_action_work);
++}
++
++static void tg_server_process_unthrottle(struct rq *rq,
++					 struct sched_dl_entity *server)
++{
++	struct task_group *tg;
++	struct rq *vrq;
++	bool idle, pulled = false;
++
++	tg = READ_ONCE(server->tg);
++	if (!tg || tg == &root_task_group)
++		return;
++
++	vrq = READ_ONCE(server->vrq);
++	if (!vrq)
++		return;
++
++	trace_sched_tg_server_unthrottle(tg, server, cpu_of(rq),
++					 cpu_of(vrq),
++					 cgroup_id(tg->css.cgroup));
++
++	raw_spin_rq_lock_nested(vrq, SINGLE_DEPTH_NESTING);
++	idle = !READ_ONCE(vrq->nr_running);
++	raw_spin_rq_unlock(vrq);
++
++	if (idle)
++		pulled = tg_server_pull_task(tg, vrq);
++
++	raw_spin_rq_lock_nested(vrq, SINGLE_DEPTH_NESTING);
++	idle = !READ_ONCE(vrq->nr_running);
++	raw_spin_rq_unlock(vrq);
++
++	if (!idle)
++		return;
++
++	if (!pulled)
++		dl_server_stop(server);
++}
++
++static void tg_server_process_throttle(struct rq *rq,
++				       struct sched_dl_entity *server)
++{
++	struct task_group *tg;
++	struct rq *vrq;
++	struct task_struct *curr;
++	bool retry = false;
++
++	tg = READ_ONCE(server->tg);
++	if (!tg || tg == &root_task_group)
++		return;
++
++	vrq = READ_ONCE(server->vrq);
++	if (!vrq)
++		return;
++
++	trace_sched_tg_server_throttle(tg, server, cpu_of(rq),
++				       cpu_of(vrq),
++				       cgroup_id(tg->css.cgroup));
++
++	raw_spin_rq_lock_nested(vrq, SINGLE_DEPTH_NESTING);
++
++	/* The throttled server cannot keep running its curr task, hand
++	 * the execution context back to idle so push helpers can migrate
++	 * it. Lockdep check ensures the dereference happens under the
++	 * vrq lock.
++	 */
++	curr = rcu_dereference_protected(vrq->curr,
++					 lockdep_is_held(&vrq->__lock));
++	if (curr != vrq->idle) {
++		rq_set_donor(vrq, vrq->idle);
++		RCU_INIT_POINTER(vrq->curr, vrq->idle);
++	}
++
++	while (READ_ONCE(vrq->nr_running)) {
++		if (!tg_server_push_task(tg, vrq, &retry))
++			break;
++	}
++	raw_spin_rq_unlock(vrq);
++
++	if (retry)
++		tg_server_queue_action(rq, server, TG_SERVER_ACTION_THROTTLE);
++}
++
++static void tg_server_actions_drain(struct rq *rq, struct llist_node *nodes)
++{
++	struct llist_node *node = nodes;
++	unsigned long flags;
++
++	raw_spin_rq_lock_irqsave(rq, flags);
++	while (node) {
++		struct sched_dl_entity *server =
++			container_of(node, struct sched_dl_entity,
++				     tgbs_irq_node);
++		unsigned long actions;
++		struct rq *server_rq;
++
++		node = node->next;
++		atomic_set(&server->tgbs_irq_pending, 0);
++		actions = atomic_long_xchg(&server->tgbs_irq_actions, 0);
++
++		if (!actions)
++			continue;
++
++		server_rq = READ_ONCE(server->rq);
++		if (server_rq != rq) {
++			if (server_rq)
++				tg_server_queue_action(server_rq, server, actions);
++			continue;
++		}
++
++		if (actions & TG_SERVER_ACTION_THROTTLE)
++			tg_server_process_throttle(rq, server);
++
++		if (actions & TG_SERVER_ACTION_UNTHROTTLE)
++			tg_server_process_unthrottle(rq, server);
++	}
++	raw_spin_rq_unlock_irqrestore(rq, flags);
++}
++
++static void tg_server_action_irq_work(struct irq_work *work)
++{
++	struct rq *rq = container_of(work, struct rq, tgbs_action_work);
++	struct llist_node *nodes;
++
++	nodes = llist_del_all(&rq->tgbs_action_list);
++	if (!nodes)
++		return;
++
++	tg_server_actions_drain(rq, nodes);
++}
++
+ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
+ {
+ 	struct task_group *tg = task_group(p);
+@@ -2306,6 +2542,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+ 	if (!READ_ONCE(vrq->nr_running)) {
+ 		bool was_active;
+ 
++		if (server->dl_throttled)
++			return;
+ 		if (tg_server_pull_task(tg, vrq))
+ 			return;
+ 
+@@ -2378,33 +2616,45 @@ void tg_server_account_runtime(struct rq *rq,
+ void tg_server_handle_throttle(struct sched_dl_entity *server)
+ {
+ 	struct rq *rq;
++	struct task_group *tg;
+ 
+ 	if (!server)
+ 		return;
+ 
+-	rq = server->rq;
+-	if (!rq || server == &rq->fair_server || !server->tg)
++	rq = READ_ONCE(server->rq);
++	if (!rq)
++		return;
++
++	if (server == &rq->fair_server)
++		return;
++
++	tg = READ_ONCE(server->tg);
++	if (!tg || tg == &root_task_group)
+ 		return;
+ 
+-	trace_sched_tg_server_throttle(server->tg, server, cpu_of(rq),
+-				       server->vrq ? cpu_of(server->vrq) : -1,
+-				       cgroup_id(server->tg->css.cgroup));
++	tg_server_queue_action(rq, server, TG_SERVER_ACTION_THROTTLE);
+ }
+ 
+ void tg_server_handle_unthrottle(struct sched_dl_entity *server)
+ {
+ 	struct rq *rq;
++	struct task_group *tg;
+ 
+ 	if (!server)
+ 		return;
+ 
+-	rq = server->rq;
+-	if (!rq || server == &rq->fair_server || !server->tg)
++	rq = READ_ONCE(server->rq);
++	if (!rq)
++		return;
++
++	if (server == &rq->fair_server)
++		return;
++
++	tg = READ_ONCE(server->tg);
++	if (!tg || tg == &root_task_group)
+ 		return;
+ 
+-	trace_sched_tg_server_unthrottle(server->tg, server, cpu_of(rq),
+-					 server->vrq ? cpu_of(server->vrq) : -1,
+-					 cgroup_id(server->tg->css.cgroup));
++	tg_server_queue_action(rq, server, TG_SERVER_ACTION_UNTHROTTLE);
+ }
+ #endif
+ 
+@@ -9289,6 +9539,8 @@ void __init sched_init(void)
+ 		rq->cfs.rq = rq;
+ 		rq->rt.rq = rq;
+ 		rq->dl.rq = rq;
++		init_llist_head(&rq->tgbs_action_list);
++		init_irq_work(&rq->tgbs_action_work, tg_server_action_irq_work);
+ #endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
+@@ -9801,6 +10053,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 	server->tg = tg;
+ 	server->vrq = vrq;
+ 	server->parent = parent;
++	server->tgbs_irq_node.next = NULL;
++	atomic_set(&server->tgbs_irq_pending, 0);
++	atomic_long_set(&server->tgbs_irq_actions, 0);
+ 	tg->tg_server[cpu] = server;
+ 	vrq->cfs.rq = vrq;
+ 	vrq->rt.rq = vrq;
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 58d4e1970b81..9a8a1815da52 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -1235,6 +1235,11 @@ struct rq {
+ 
+ 	struct sched_dl_entity	fair_server;
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct llist_head	tgbs_action_list;
++	struct irq_work		tgbs_action_work;
++#endif
++
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	/* list of leaf cfs_rq on this CPU: */
+ 	struct list_head	leaf_cfs_rq_list;
+-- 
+2.43.0
+

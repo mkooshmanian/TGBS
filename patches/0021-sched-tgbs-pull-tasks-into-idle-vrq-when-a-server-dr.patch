@@ -1,0 +1,280 @@
+From 41e4ef4eb390b8e90e07747ca86537d995abf984 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Sun, 16 Nov 2025 14:24:31 +0100
+Subject: [PATCH 21/22] sched/tgbs: pull tasks into idle vrq when a server
+ drains
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Teach TG bandwidth servers to actively pull runnable tasks from sibling VRQs
+before stopping: reuse the standard migration guards, add per-class helpers
+(DL scans the pushable rb-tree with capacity checks, then RT and fair
+fallbacks), and call move_queued_task_locked() to migrate one task once we’ve
+taken the source VRQ’s raw spinlock. This mirrors the root scheduler’s balance
+logic, avoids recursive pulls without extra state, and keeps a VRQ running
+whenever migrable work exists elsewhere in the task group.
+---
+ kernel/sched/core.c     | 105 +++++++++++++++++++++++++++++++++++++++-
+ kernel/sched/deadline.c |  29 +++++++++++
+ kernel/sched/fair.c     |  17 +++++++
+ kernel/sched/rt.c       |  21 ++++++++
+ kernel/sched/sched.h    |   5 ++
+ 5 files changed, 176 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 55163532c92c..b93fd8cbed9a 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2161,6 +2161,9 @@ unsigned long get_wchan(struct task_struct *p)
+ }
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
++
++static inline bool is_cpu_allowed(struct task_struct *p, int cpu);
++
+ static int tg_select_task_cpu(struct task_struct *p, int cpu)
+ {
+ 	struct task_group *tg = task_group(p);
+@@ -2179,6 +2182,76 @@ static int tg_select_task_cpu(struct task_struct *p, int cpu)
+ 	return cpu;
+ }
+ 
++static struct task_struct *
++tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
++{
++	struct task_struct *p;
++
++	p = tg_server_pull_dl_task_from_cpu(src_rq, dst_cpu);
++	if (p)
++		return p;
++
++	p = tg_server_pull_rt_task_from_cpu(src_rq, dst_cpu);
++	if (p)
++		return p;
++
++	return tg_server_pull_fair_task_from_cpu(src_rq, dst_cpu);
++}
++
++static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
++{
++	int dst_cpu = cpu_of(dst_vrq);
++	int cpu;
++
++	for_each_possible_cpu(cpu) {
++		struct sched_dl_entity *server;
++		struct rq *src_vrq;
++		struct rq *src_phys;
++		struct task_struct *p;
++
++		if (cpu == dst_cpu)
++			continue;
++
++		server = READ_ONCE(tg->tg_server[cpu]);
++		if (!server)
++			continue;
++
++		src_vrq = READ_ONCE(server->vrq);
++		if (!src_vrq)
++			continue;
++
++		src_phys = READ_ONCE(server->rq);
++		if (!src_phys)
++			continue;
++
++		if (!READ_ONCE(src_vrq->nr_running))
++			continue;
++
++		if (!raw_spin_rq_trylock(src_phys))
++			continue;
++
++		if (!raw_spin_rq_trylock(src_vrq))
++			goto unlock_phys;
++
++		p = tg_server_pull_task_from_cpu(src_vrq, dst_cpu);
++		if (p) {
++			update_rq_clock(src_vrq);
++			update_rq_clock(dst_vrq);
++
++			move_queued_task_locked(src_vrq, dst_vrq, p);
++		}
++
++		raw_spin_rq_unlock(src_vrq);
++unlock_phys:
++		raw_spin_rq_unlock(src_phys);
++
++		if (p)
++			return true;
++	}
++
++	return false;
++}
++
+ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
+ {
+ 	struct task_group *tg = task_group(p);
+@@ -2231,7 +2304,12 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+ 	BUG_ON(vrq != server->vrq);
+ 
+ 	if (!READ_ONCE(vrq->nr_running)) {
+-		bool was_active = dl_server_active(server);
++		bool was_active;
++
++		if (tg_server_pull_task(tg, vrq))
++			return;
++
++		was_active = dl_server_active(server);
+ 
+ 		dl_server_stop(server);
+ 		if (was_active && !dl_server_active(server))
+@@ -2242,6 +2320,31 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+ 	}
+ }
+ 
++bool tg_vrq_can_migrate_task(struct rq *src_rq,
++				    struct task_struct *p, int dst_cpu)
++{
++	if (!p)
++		return false;
++
++	if (!is_cpu_allowed(p, dst_cpu))
++		return false;
++
++	if (is_migration_disabled(p))
++		return false;
++
++	if (!task_on_rq_queued(p))
++		return false;
++
++	/*
++	 * Do not attempt to move the task that is currently providing either
++	 * the scheduling or the execution context for this rq.
++	 */
++	if (task_current(src_rq, p) || task_current_donor(src_rq, p))
++		return false;
++
++	return true;
++}
++
+ void tg_server_account_runtime(struct rq *rq,
+ 					     struct task_struct *p,
+ 					     s64 delta_exec)
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index e31ad104232c..b84fafe5a50f 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -2765,6 +2765,35 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
+ 
+ 	return have_best ? best_cpu : cpu;
+ }
++
++struct task_struct *tg_server_pull_dl_task_from_cpu(struct rq *rq, int dst_cpu)
++{
++	struct task_struct *p;
++	struct rb_node *node;
++
++	if (!has_pushable_dl_tasks(rq))
++		return NULL;
++
++	node = rb_first_cached(&rq->dl.pushable_dl_tasks_root);
++	while (node) {
++		p = __node_2_pdl(node);
++
++		if (!task_is_pushable(rq, p, dst_cpu))
++			goto next;
++
++		if (!dl_task_fits_capacity(p, dst_cpu))
++			goto next;
++
++		if (!tg_vrq_can_migrate_task(rq, p, dst_cpu))
++			goto next;
++
++		return p;
++next:
++		node = rb_next(node);
++	}
++
++	return NULL;
++}
+ #endif
+ 
+ static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index d4115679f948..9def7877d2c2 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -8931,6 +8931,23 @@ int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int
+ 
+ 	return have_best ? best_cpu : cpu;
+ }
++
++struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu)
++{
++	struct task_struct *p;
++
++	if (list_empty(&rq->cfs_tasks))
++		return NULL;
++
++	list_for_each_entry_reverse(p, &rq->cfs_tasks, se.group_node) {
++		if (!tg_vrq_can_migrate_task(rq, p, dst_cpu))
++			continue;
++
++		return p;
++	}
++
++	return NULL;
++}
+ #endif
+ 
+ static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index 03144dd54343..9264627359f4 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -1819,6 +1819,27 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
+ 
+ 	return have_best ? best_cpu : cpu;
+ }
++
++struct task_struct *tg_server_pull_rt_task_from_cpu(struct rq *rq, int dst_cpu)
++{
++	struct plist_head *head = &rq->rt.pushable_tasks;
++	struct task_struct *p;
++
++	if (plist_head_empty(head))
++		return NULL;
++
++	plist_for_each_entry(p, head, pushable_tasks) {
++		if (!task_is_pushable(rq, p, dst_cpu))
++			continue;
++
++		if (!tg_vrq_can_migrate_task(rq, p, dst_cpu))
++			continue;
++
++		return p;
++	}
++
++	return NULL;
++}
+ #endif
+ 
+ static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index c6e14a26f672..58d4e1970b81 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -433,6 +433,11 @@ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
+ extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
+ extern void tg_server_handle_throttle(struct sched_dl_entity *server);
+ extern void tg_server_handle_unthrottle(struct sched_dl_entity *server);
++extern struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu);
++extern struct task_struct *tg_server_pull_rt_task_from_cpu(struct rq *rq, int dst_cpu);
++extern struct task_struct *tg_server_pull_dl_task_from_cpu(struct rq *rq, int dst_cpu);
++extern bool tg_vrq_can_migrate_task(struct rq *src_rq, struct task_struct *p,
++				    int dst_cpu);
+ #endif
+ 
+ extern void dl_server_update_idle_time(struct rq *rq,
+-- 
+2.43.0
+
