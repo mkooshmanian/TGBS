@@ -1,0 +1,76 @@
+From 0f0f789194ef75ffbb9a9c9fab5b3c9a861b0a74 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Wed, 10 Dec 2025 10:09:37 +0100
+Subject: [PATCH 09/19] sched/tg_server: add virtual rq locking helpers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Introduce tg_server_vrq_lock()/tg_server_vrq_unlock() so virtual rq state
+(curr/donor, clocks) can be protected in IRQ-safe contexts. The helpers
+mirror rq_lock()/rq_unlock() semantics, including balance handling
+(rq_pin_lock + __balance_callbacks) so balance callbacks queued on a vrq
+don’t linger and trigger lockdep WARNs. This is infrastructure for TG
+servers; it just aligns vrq locking with real rq locking.
+---
+ kernel/sched/core.c  | 15 +++++++++++++++
+ kernel/sched/sched.h |  3 +++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 17f5f6e91fbd..3460b6b63600 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2052,6 +2052,8 @@ static inline void init_uclamp(void) { }
+ #endif /* !CONFIG_UCLAMP_TASK */
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
++static void __balance_callbacks(struct rq *rq);
++
+ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
+ {
+ 	struct sched_dl_entity *server;
+@@ -2065,6 +2067,19 @@ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
+ 
+ 	return READ_ONCE(server->vrq);
+ }
++
++void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf)
++{
++	raw_spin_rq_lock_nested(rq, SINGLE_DEPTH_NESTING);
++	rq_pin_lock(rq, rf);
++}
++
++void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
++{
++	rq_unpin_lock(rq, rf);
++	__balance_callbacks(rq);
++	raw_spin_rq_unlock(rq);
++}
+ #endif
+ 
+ bool sched_task_on_rq(struct task_struct *p)
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index ea3ec23b40b0..7e8a241136f8 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -82,6 +82,7 @@ struct rt_rq;
+ struct sched_group;
+ struct cpuidle_state;
+ struct task_group;
++struct rq_flags;
+ 
+ #ifdef CONFIG_PARAVIRT
+ # include <asm/paravirt.h>
+@@ -421,6 +422,8 @@ extern void sched_init_dl_servers(void);
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+ extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
++extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
++extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
+ #endif
+ 
+ extern void dl_server_update_idle_time(struct rq *rq,
+-- 
+2.43.0
+

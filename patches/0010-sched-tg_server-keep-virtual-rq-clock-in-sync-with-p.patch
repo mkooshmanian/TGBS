@@ -1,0 +1,252 @@
+From 67f137ec01b7dc151bdd52a7503f89e34b704859 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Mon, 8 Dec 2025 15:04:44 +0100
+Subject: [PATCH 10/19] sched/tg_server: keep virtual rq clock in sync with
+ physical rq
+
+The TG virtual runqueue reuses rq_clock_task(), but its clock never advanced
+when tasks ran on the physical rq. Add sync_vrq_clock() and call it when
+switching to a task on a VRQ, in CFS accounting paths (including
+task_sched_runtime()), and before programming a VRQ deadline timer (clear
+RQCF_ACT_SKIP and update the clock first). Wrap set_next/put_prev with the
+VRQ lock so the sync runs under the right lock. This keeps VRQ time aligned
+with the physical rq for accounting and timer programming.
+---
+ kernel/sched/core.c     | 40 +++++++++++++++++++++++++++++++
+ kernel/sched/deadline.c | 16 +++++++++++++
+ kernel/sched/fair.c     | 31 ++++++++++++++++++++++++
+ kernel/sched/sched.h    | 53 +++++++++++++++++++++++++++++++++++++----
+ 4 files changed, 136 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 3460b6b63600..a89ffed55cb9 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2080,6 +2080,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
+ 	__balance_callbacks(rq);
+ 	raw_spin_rq_unlock(rq);
+ }
++
++u64 sync_vrq_clock(struct rq *vrq, struct rq *phys)
++{
++	u64 now_phys;
++	s64 delta;
++
++	lockdep_assert_rq_held(vrq);
++	lockdep_assert_rq_held(phys);
++
++	now_phys = rq_clock_task(phys);
++	delta = now_phys - vrq->clock_task;
++
++	if (delta > 0) {
++		/*
++		 * Tasks executing on a virtual rq still consume CPU time on
++		 * the physical rq. Propagate the elapsed time so that the
++		 * virtual rq's clock-based accounting (runtime throttling,
++		 * vruntime updates, etc.) reflects reality.
++		 */
++		vrq->clock += delta;
++		vrq->clock_task += delta;
++		update_rq_clock_pelt(vrq, delta);
++	}
++
++	return now_phys;
++}
+ #endif
+ 
+ bool sched_task_on_rq(struct task_struct *p)
+@@ -5574,9 +5600,23 @@ unsigned long long task_sched_runtime(struct task_struct *p)
+ 	 * thread, breaking clock_gettime().
+ 	 */
+ 	if (task_current_donor(rq, p) && task_on_rq_queued(p)) {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		struct rq *task_vrq = tg_server_rq_of_task(rq, p);
++		struct rq_flags vrf = { };
++		bool vrq_locked = false;
++
++		if (task_vrq != rq) {
++			tg_server_vrq_lock(task_vrq, &vrf);
++			vrq_locked = true;
++		}
++#endif
+ 		prefetch_curr_exec_start(p);
+ 		update_rq_clock(rq);
+ 		p->sched_class->update_curr(rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		if (vrq_locked)
++			tg_server_vrq_unlock(task_vrq, &vrf);
++#endif
+ 	}
+ 	ns = p->se.sum_exec_runtime;
+ 	task_rq_unlock(rq, p, &rf);
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 11f07da0a2c7..36c32b7a3c56 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -1190,6 +1190,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
+ 
+ 	lockdep_assert_rq_held(rq);
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (rq->clock_update_flags & RQCF_ACT_SKIP) {
++		unsigned int flags = rq->clock_update_flags;
++
++		/*
++		 * Virtual runqueues created for TG bandwidth servers do not
++		 * automatically advance their clocks. Bring their notion of
++		 * time up to date before translating rq->clock-based deadlines
++		 * into hrtimer expiry times.
++		 */
++		rq->clock_update_flags &= ~RQCF_ACT_SKIP;
++		update_rq_clock(rq);
++		rq->clock_update_flags = flags;
++	}
++#endif
++
+ 	/*
+ 	 * We want the timer to fire at the deadline, but considering
+ 	 * that it is actually coming from rq->clock and not from
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 8ce56a8d507f..2467136d9c4e 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -1154,6 +1154,14 @@ void post_init_entity_util_avg(struct task_struct *p)
+ 
+ static s64 update_se(struct rq *rq, struct sched_entity *se)
+ {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (entity_is_task(se)) {
++		struct rq *phys_rq = task_rq(task_of(se));
++
++		if (unlikely(phys_rq != rq))
++			sync_vrq_clock(rq, phys_rq);
++	}
++#endif
+ 	u64 now = rq_clock_task(rq);
+ 	s64 delta_exec;
+ 
+@@ -1165,6 +1173,14 @@ static s64 update_se(struct rq *rq, struct sched_entity *se)
+ 	if (entity_is_task(se)) {
+ 		struct task_struct *donor = task_of(se);
+ 		struct task_struct *running = rq->curr;
++
++		/*
++		 * When se lives on a virtual rq, rq->curr still refers to the
++		 * vrq's idle proxy and runtime would be mis-accounted; switch to
++		 * the donor so we charge the actual task.
++		 */
++		if (unlikely(rq != task_rq(donor)))
++			running = donor;
+ 		/*
+ 		 * If se is a task, we account the time against the running
+ 		 * task, as w/ proxy-exec they may not be the same.
+@@ -1377,6 +1393,21 @@ update_stats_curr_start(struct cfs_rq *cfs_rq, struct sched_entity *se)
+ 	/*
+ 	 * We are starting a new run period:
+ 	 */
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (entity_is_task(se)) {
++		struct rq *vrq = rq_of(cfs_rq);
++		struct rq *phys_rq = task_rq(task_of(se));
++		u64 now;
++
++		if (unlikely(phys_rq != vrq))
++			now = sync_vrq_clock(vrq, phys_rq);
++		else
++			now = rq_clock_task(vrq);
++
++		se->exec_start = now;
++		return;
++	}
++#endif
+ 	se->exec_start = rq_clock_task(rq_of(cfs_rq));
+ }
+ 
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 7e8a241136f8..64ac0d489385 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -424,6 +424,7 @@ extern void sched_init_dl_servers(void);
+ extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
+ extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
+ extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
++u64 sync_vrq_clock(struct rq *vrq, struct rq *phys);
+ #endif
+ 
+ extern void dl_server_update_idle_time(struct rq *rq,
+@@ -2517,15 +2518,59 @@ struct sched_class {
+ #endif
+ };
+ 
++static inline void
++__put_prev_task(struct rq *rq, struct task_struct *prev,
++		       struct task_struct *next)
++{
++	struct rq *task_rq = rq;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	bool locked = false;
++	struct rq_flags vrf = { };
++
++	task_rq = tg_server_rq_of_task(rq, prev);
++	if (task_rq != rq) {
++		tg_server_vrq_lock(task_rq, &vrf);
++		locked = true;
++	}
++#endif
++	prev->sched_class->put_prev_task(task_rq, prev, next);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (locked)
++		tg_server_vrq_unlock(task_rq, &vrf);
++#endif
++}
++
++static inline void
++__set_next_task(struct rq *rq, struct task_struct *next, bool first)
++{
++	struct rq *task_rq = rq;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	bool locked = false;
++	struct rq_flags vrf = { };
++
++	task_rq = tg_server_rq_of_task(rq, next);
++	if (task_rq != rq) {
++		tg_server_vrq_lock(task_rq, &vrf);
++		locked = true;
++		sync_vrq_clock(task_rq, rq);
++	}
++#endif
++	next->sched_class->set_next_task(task_rq, next, first);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (locked)
++		tg_server_vrq_unlock(task_rq, &vrf);
++#endif
++}
++
+ static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
+ {
+ 	WARN_ON_ONCE(rq->donor != prev);
+-	prev->sched_class->put_prev_task(rq, prev, NULL);
++	__put_prev_task(rq, prev, NULL);
+ }
+ 
+ static inline void set_next_task(struct rq *rq, struct task_struct *next)
+ {
+-	next->sched_class->set_next_task(rq, next, false);
++	__set_next_task(rq, next, false);
+ }
+ 
+ static inline void
+@@ -2549,8 +2594,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
+ 	if (next == prev)
+ 		return;
+ 
+-	prev->sched_class->put_prev_task(rq, prev, next);
+-	next->sched_class->set_next_task(rq, next, true);
++	__put_prev_task(rq, prev, next);
++	__set_next_task(rq, next, true);
+ }
+ 
+ /*
+-- 
+2.43.0
+

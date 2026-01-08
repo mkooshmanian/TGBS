@@ -1,0 +1,80 @@
+From dd8ab76b5fc696928cbb48dfa162663a770164c1 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Mon, 8 Dec 2025 15:36:19 +0100
+Subject: [PATCH 13/19] sched/tg_server: sync VRQ state during context switches
+ and wakeup preempt
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When switching to a task on a TG VRQ, update the VRQ’s donor/curr under its
+lock after syncing clocks. Also route wakeup_preempt through the task’s VRQ
+(with locking) so class callbacks see the right runqueue. This keeps VRQ state
+in sync with the physical rq for preemption decisions.
+---
+ kernel/sched/core.c  | 33 ++++++++++++++++++++++++++++++---
+ kernel/sched/sched.h |  3 +++
+ 2 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 26f7f23d2690..251b68233e7f 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2400,10 +2400,37 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
+ void wakeup_preempt(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	struct task_struct *donor = rq->donor;
++	struct rq *class_rq = rq;
++	bool same_rq = true;
+ 
+-	if (p->sched_class == donor->sched_class)
+-		donor->sched_class->wakeup_preempt(rq, p, flags);
+-	else if (sched_class_above(p->sched_class, donor->sched_class))
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	{
++		struct rq *donor_rq = tg_server_rq_of_task(rq, donor);
++		struct rq *p_rq = tg_server_rq_of_task(rq, p);
++
++		class_rq = donor_rq;
++		same_rq = (donor_rq == p_rq);
++	}
++#endif
++
++	if (p->sched_class == donor->sched_class && same_rq) {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		struct rq_flags vrf;
++		bool class_locked = false;
++
++		if (class_rq != rq) {
++			tg_server_vrq_lock(class_rq, &vrf);
++			class_locked = true;
++		}
++
++		donor->sched_class->wakeup_preempt(class_rq, p, flags);
++
++		if (class_locked)
++			tg_server_vrq_unlock(class_rq, &vrf);
++#else
++		donor->sched_class->wakeup_preempt(class_rq, p, flags);
++#endif
++	} else if (sched_class_above(p->sched_class, donor->sched_class))
+ 		resched_curr(rq);
+ 
+ 	/*
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 894c48df1318..6abdc857f907 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -2556,6 +2556,9 @@ __set_next_task(struct rq *rq, struct task_struct *next, bool first)
+ 		tg_server_vrq_lock(task_rq, &vrf);
+ 		locked = true;
+ 		sync_vrq_clock(task_rq, rq);
++		/* Keep the virtual rq's view of the context switch in sync. */
++		rq_set_donor(task_rq, next);
++		RCU_INIT_POINTER(task_rq->curr, next);
+ 	}
+ #endif
+ 	next->sched_class->set_next_task(task_rq, next, first);
+-- 
+2.43.0
+

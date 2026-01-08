@@ -1,0 +1,261 @@
+From 1422f566d6399c10889ada4253b131accb28670b Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Wed, 29 Oct 2025 13:41:55 +0100
+Subject: [PATCH 02/19] sched/core: add task group bandwidth server scaffolding
+
+Hook up the CONFIG_TG_BANDWIDTH_SERVER plumbing so task groups
+allocate, initialize and free their DL bandwidth servers, and
+bootstrap the root task group state during sched_init(). This
+lays the groundwork for wiring real bandwidth server entries.
+---
+ include/linux/sched.h   |   5 ++
+ kernel/sched/core.c     | 108 ++++++++++++++++++++++++++++++++++++++++
+ kernel/sched/deadline.c |   5 ++
+ kernel/sched/sched.h    |  29 +++++++++++
+ 4 files changed, 147 insertions(+)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index e4ce0a76831e..ff00d2356cc2 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -734,6 +734,11 @@ struct sched_dl_entity {
+ 	struct rq			*rq;
+ 	dl_server_pick_f		server_pick_task;
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct sched_dl_entity		*parent;
++	struct task_group		*tg;
++#endif
++
+ #ifdef CONFIG_RT_MUTEXES
+ 	/*
+ 	 * Priority Inheritance. When a DEADLINE scheduling entity is boosted
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index ccba6fc3c3fe..19b6b1da07c2 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -8687,6 +8687,9 @@ void __init sched_init(void)
+ 
+ 	wait_bit_init();
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	ptr += nr_cpu_ids * sizeof(void **);
++#endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	ptr += 2 * nr_cpu_ids * sizeof(void **);
+ #endif
+@@ -8696,6 +8699,10 @@ void __init sched_init(void)
+ 	if (ptr) {
+ 		ptr = (unsigned long)kzalloc(ptr, GFP_NOWAIT);
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		root_task_group.tg_server = (struct sched_dl_entity **)ptr;
++		ptr += nr_cpu_ids * sizeof(void **);
++#endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		root_task_group.se = (struct sched_entity **)ptr;
+ 		ptr += nr_cpu_ids * sizeof(void **);
+@@ -8721,6 +8728,11 @@ void __init sched_init(void)
+ 
+ 	init_defrootdomain();
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++ 	// Initialises root bandwith with a 0s runtime and an arbitrary 1s period
++	init_tg_bandwidth(&root_task_group.tg_bandwidth, 1 * NSEC_PER_SEC, 0);
++#endif
++
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
+ 			global_rt_period(), global_rt_runtime());
+@@ -8746,6 +8758,10 @@ void __init sched_init(void)
+ 		init_cfs_rq(&rq->cfs);
+ 		init_rt_rq(&rq->rt);
+ 		init_dl_rq(&rq->dl);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		/* Root task group has no parent: keep entries NULL to stop traversal here. */
++		root_task_group.tg_server[i] = NULL;
++#endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
+ 		rq->tmp_alone_branch = &rq->leaf_cfs_rq_list;
+@@ -9103,8 +9119,97 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
+ #endif
+ }
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++static struct task_struct *
++tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
++{
++	/* TODO: implement actual selection for bandwidth servers. */
++	return NULL;
++}
++
++void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
++		struct sched_dl_entity *server, int cpu,
++		struct sched_dl_entity *parent)
++{
++	server->tg = tg;
++	server->parent = parent;
++	tg->tg_server[cpu] = server;
++}
++
++void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
++{
++	raw_spin_lock_init(&dl_bw->dl_runtime_lock);
++	dl_bw->dl_period = period;
++	dl_bw->dl_runtime = runtime;
++}
++
++int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
++{
++	int cpu;
++
++	tg->tg_server = kcalloc(nr_cpu_ids, sizeof(*tg->tg_server), GFP_KERNEL);
++	if (!tg->tg_server)
++		return -ENOMEM;
++
++	// Initialise the bandwidth with parent's period but a 0s runtime
++	init_tg_bandwidth(&tg->tg_bandwidth, parent->tg_bandwidth.dl_period, 0);
++
++	for_each_possible_cpu(cpu) {
++		struct sched_dl_entity *server;
++		struct rq *rq = cpu_rq(cpu);
++		struct sched_dl_entity *parent_server =
++			parent ? parent->tg_server[cpu] : NULL;
++
++		server = kzalloc_node(sizeof(*server), GFP_KERNEL, cpu_to_node(cpu));
++		if (!server)
++			goto err_free;
++
++		init_dl_entity(server);
++		server->dl_runtime = tg->tg_bandwidth.dl_runtime;
++		server->dl_period = tg->tg_bandwidth.dl_period;
++		server->dl_deadline = server->dl_period;
++		server->dl_bw = to_ratio(server->dl_period, server->dl_runtime);
++		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
++		server->dl_server = 1;
++
++		dl_server_init(server, rq, tg_bandwidth_server_pick_task);
++
++		init_tg_bandwidth_entry(tg, rq, server, cpu, parent_server);
++	}
++
++	return 1;
++
++err_free:
++	for_each_possible_cpu(cpu) {
++		kfree(tg->tg_server[cpu]);
++		tg->tg_server[cpu] = NULL;
++	}
++	kfree(tg->tg_server);
++	tg->tg_server = NULL;
++
++	return 0;
++}
++
++void free_tg_bandwidth_server(struct task_group *tg)
++{
++	int cpu;
++
++	if (!tg->tg_server)
++		return;
++
++	for_each_possible_cpu(cpu) {
++		kfree(tg->tg_server[cpu]);
++		tg->tg_server[cpu] = NULL;
++	}
++
++	kfree(tg->tg_server);
++	tg->tg_server = NULL;
++}
++#endif /* CONFIG_TG_BANDWIDTH_SERVER */
++
+ static void sched_free_group(struct task_group *tg)
+ {
++	free_tg_bandwidth_server(tg);
+ 	free_fair_sched_group(tg);
+ 	free_rt_sched_group(tg);
+ 	autogroup_free(tg);
+@@ -9136,6 +9241,9 @@ struct task_group *sched_create_group(struct task_group *parent)
+ 	if (!tg)
+ 		return ERR_PTR(-ENOMEM);
+ 
++	if (!alloc_tg_bandwidth_server(tg, parent))
++		goto err;
++
+ 	if (!alloc_fair_sched_group(tg, parent))
+ 		goto err;
+ 
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 72c1f72463c7..2efb42030d07 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -3359,6 +3359,11 @@ static void __dl_clear_params(struct sched_dl_entity *dl_se)
+ 	dl_se->dl_overrun		= 0;
+ 	dl_se->dl_server		= 0;
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	dl_se->parent			= NULL;
++	dl_se->tg				= NULL;
++#endif
++
+ #ifdef CONFIG_RT_MUTEXES
+ 	dl_se->pi_se			= dl_se;
+ #endif
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index cf2109b67f9a..f8b71634d456 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -310,6 +310,12 @@ struct rt_prio_array {
+ 	struct list_head queue[MAX_RT_PRIO];
+ };
+ 
++struct dl_bandwidth {
++	raw_spinlock_t          dl_runtime_lock;
++	u64                     dl_runtime;
++	u64                     dl_period;
++};
++
+ struct rt_bandwidth {
+ 	/* nests inside the rq lock: */
+ 	raw_spinlock_t		rt_runtime_lock;
+@@ -471,6 +477,11 @@ struct cfs_bandwidth {
+ struct task_group {
+ 	struct cgroup_subsys_state css;
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct sched_dl_entity **tg_server;
++	struct dl_bandwidth tg_bandwidth;
++#endif
++
+ #ifdef CONFIG_GROUP_SCHED_WEIGHT
+ 	/* A positive value indicates that this is a SCHED_IDLE group. */
+ 	int			idle;
+@@ -561,6 +572,24 @@ static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
+ 
+ extern int tg_nop(struct task_group *tg, void *data);
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
++		struct sched_dl_entity *server, int cpu,
++		struct sched_dl_entity *parent);
++extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
++
++extern void free_tg_bandwidth_server(struct task_group *tg);
++extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
++#else
++static inline void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
++		struct sched_dl_entity *server, int cpu,
++		struct sched_dl_entity *parent) { }
++static inline void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime) { }
++
++static inline void free_tg_bandwidth_server(struct task_group *tg) { }
++static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
++#endif
++
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ extern void free_fair_sched_group(struct task_group *tg);
+ extern int alloc_fair_sched_group(struct task_group *tg, struct task_group *parent);
+-- 
+2.43.0
+

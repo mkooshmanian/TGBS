@@ -1,0 +1,567 @@
+From 3daa3c2bdc314fe3fa0e5ab56fe782ad43d1a667 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Wed, 10 Dec 2025 16:50:53 +0100
+Subject: [PATCH 16/19] sched/dl: route DL tasks through TG server virtual rq
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move DL tasks onto their TG server virtual runqueues so the server can reuse
+the DL picker before falling back to RT/FAIR. Cache vrq/dl_rq in DL entities,
+expose tg_server_pick_dl_task(), and have set_task_rq() wire CFS/RT/DL state
+to the server vrq whenever a task belongs to a bandwidth-controlled group.
+
+Mirror CBS bandwidth into the server vrq: give each dl_rq a back-pointer,
+zero virtual-rq limits during init, and update tg_server_init/init_tg_dl_se()
+so tg_server_update_dl_rq() clamps max_bw/extra_bw/bw_ratio to the server’s
+dl_bw whenever tg_{alloc,set}_dl_bandwidth() changes the CBS parameters.
+
+Introduce a DL task_change_group() callback (TG_BANDWIDTH_SERVER only) to
+move BW accounting to the TG server VRQ when a task changes cgroup.
+---
+ include/linux/sched.h   |  10 +-
+ kernel/sched/core.c     |   8 +-
+ kernel/sched/deadline.c | 264 ++++++++++++++++++++++++++++++++++++++--
+ kernel/sched/sched.h    |   9 +-
+ 4 files changed, 276 insertions(+), 15 deletions(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 9d27869bd4ba..ee1a20f4b87c 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -741,10 +741,14 @@ struct sched_dl_entity {
+ 	struct rq			*rq;
+ 	dl_server_pick_f		server_pick_task;
+ 
+-#ifdef CONFIG_TG_BANDWIDTH_SERVER
+-	struct rq			*vrq;
+-	struct sched_dl_entity		*parent;
++#if defined(CONFIG_TG_BANDWIDTH_SERVER)
++	/* rq on which this entity is (to be) queued: */
++	struct dl_rq			*dl_rq;
++
++	/* task group, related virtual runqueue and parent server */
+ 	struct task_group		*tg;
++	struct rq				*vrq;
++	struct sched_dl_entity	*parent;
+ #endif
+ 
+ #ifdef CONFIG_RT_MUTEXES
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 840fdce5b9b4..c5db2ce7ad27 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -9076,6 +9076,7 @@ void __init sched_init(void)
+ 		root_task_group.tg_server[i] = NULL;
+ 		rq->cfs.rq = rq;
+ 		rq->rt.rq = rq;
++		rq->dl.rq = rq;
+ #endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
+@@ -9553,6 +9554,10 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+ 		return NULL;
+ 	tg_server_vrq_lock(vrq, &vrf);
+ 
++	p = tg_server_pick_dl_task(vrq);
++	if (p)
++		goto out;
++
+ 	p = tg_server_pick_rt_task(vrq);
+ 	if (p)
+ 		goto out;
+@@ -9574,6 +9579,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 	tg->tg_server[cpu] = server;
+ 	vrq->cfs.rq = vrq;
+ 	vrq->rt.rq = vrq;
++	vrq->dl.rq = vrq;
+ }
+ 
+ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
+@@ -10070,7 +10076,7 @@ static void sched_change_group(struct task_struct *tsk)
+ 	tg = autogroup_task_group(tsk, tg);
+ 	tsk->sched_task_group = tg;
+ 
+-#ifdef CONFIG_FAIR_GROUP_SCHED
++#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
+ 	if (tsk->sched_class->task_change_group)
+ 		tsk->sched_class->task_change_group(tsk);
+ 	else
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 7a0b75218342..d9661472726d 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -62,6 +62,47 @@ static bool dl_server(struct sched_dl_entity *dl_se)
+ 	return dl_se->dl_server;
+ }
+ 
++#if defined(CONFIG_TG_BANDWIDTH_SERVER)
++
++static inline struct task_struct *dl_task_of(struct sched_dl_entity *dl_se)
++{
++	BUG_ON(dl_server(dl_se));
++	return container_of(dl_se, struct task_struct, dl);
++}
++
++static inline struct rq *rq_of_dl_rq(struct dl_rq *dl_rq)
++{
++	if (WARN_ON_ONCE(!dl_rq))
++		return NULL;
++	if (WARN_ON_ONCE(!dl_rq->rq))
++		return NULL;
++
++	return dl_rq->rq;
++}
++
++static inline struct dl_rq *dl_rq_of_se(struct sched_dl_entity *dl_se)
++{
++	struct dl_rq *dl_rq = dl_se->dl_rq;
++
++	if (unlikely(!dl_rq)) {
++		struct task_struct *p = dl_task_of(dl_se);
++
++		WARN_ON_ONCE(!dl_rq);
++		return &task_rq(p)->dl;
++	}
++
++	return dl_rq;
++}
++
++static inline struct rq *rq_of_dl_se(struct sched_dl_entity *dl_se)
++{
++	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
++
++	return rq_of_dl_rq(dl_rq);
++}
++
++#else /* !CONFIG_TG_BANDWIDTH_SERVER */
++
+ static inline struct task_struct *dl_task_of(struct sched_dl_entity *dl_se)
+ {
+ 	BUG_ON(dl_server(dl_se));
+@@ -88,6 +129,8 @@ static inline struct dl_rq *dl_rq_of_se(struct sched_dl_entity *dl_se)
+ 	return &rq_of_dl_se(dl_se)->dl;
+ }
+ 
++#endif /* CONFIG_TG_BANDWIDTH_SERVER */
++
+ static inline int on_dl_rq(struct sched_dl_entity *dl_se)
+ {
+ 	return !RB_EMPTY_NODE(&dl_se->rb_node);
+@@ -300,6 +343,54 @@ void sub_running_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
+ 		__sub_running_bw(dl_se->dl_bw, dl_rq);
+ }
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++static void task_change_group_dl(struct task_struct *p)
++{
++	struct dl_rq *old_dl_rq, *new_dl_rq;
++	struct rq *rq = task_rq(p);
++	struct rq_flags old_vrf, new_vrf;
++	struct rq *old_vrq, *new_vrq;
++	bool lock_old = false, lock_new = false;
++
++	if (READ_ONCE(p->__state) == TASK_NEW)
++		return;
++
++	old_dl_rq = p->dl.dl_rq;
++
++	/* Move task's rq pointers to the new group. */
++	set_task_rq(p, task_cpu(p));
++	new_dl_rq = p->dl.dl_rq;
++
++	if (!old_dl_rq || !new_dl_rq || old_dl_rq == new_dl_rq)
++		return;
++
++	/* We already hold the physical rq lock. */
++	old_vrq = rq_of_dl_rq(old_dl_rq);
++	new_vrq = rq_of_dl_rq(new_dl_rq);
++
++	if (old_vrq && old_vrq != rq) {
++		tg_server_vrq_lock(old_vrq, &old_vrf);
++		lock_old = true;
++	}
++	if (new_vrq && new_vrq != old_vrq && new_vrq != rq) {
++		tg_server_vrq_lock(new_vrq, &new_vrf);
++		lock_new = true;
++	}
++
++	sub_rq_bw(&p->dl, old_dl_rq);
++	add_rq_bw(&p->dl, new_dl_rq);
++	if (old_dl_rq->running_bw >= p->dl.dl_bw) {
++		sub_running_bw(&p->dl, old_dl_rq);
++		add_running_bw(&p->dl, new_dl_rq);
++	}
++
++	if (lock_new)
++		tg_server_vrq_unlock(new_vrq, &new_vrf);
++	if (lock_old)
++		tg_server_vrq_unlock(old_vrq, &old_vrf);
++}
++#endif /* CONFIG_TG_BANDWIDTH_SERVER */
++
+ static void dl_rq_change_utilization(struct rq *rq, struct sched_dl_entity *dl_se, u64 new_bw)
+ {
+ 	if (dl_se->dl_non_contending) {
+@@ -393,6 +484,30 @@ static bool sched_group_has_active_siblings(struct task_group *tg)
+ 	return has_active;
+ }
+ 
++static void tg_server_update_dl_rq(struct sched_dl_entity *dl_se)
++{
++	struct rq *vrq = READ_ONCE(dl_se->vrq);
++	struct dl_rq *dl_rq;
++	u64 bw, ratio = 0;
++	unsigned long flags;
++
++	if (WARN_ON_ONCE(!vrq))
++		return;
++
++	raw_spin_rq_lock_irqsave(vrq, flags);
++
++	dl_rq = &vrq->dl;
++	bw = dl_se->dl_bw;
++
++	dl_rq->max_bw = bw;
++	dl_rq->extra_bw = bw;
++	if (bw)
++		ratio = div64_u64(1ULL << (BW_SHIFT + RATIO_SHIFT), bw);
++	dl_rq->bw_ratio = ratio;
++
++	raw_spin_rq_unlock_irqrestore(vrq, flags);
++}
++
+ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+ {
+ 	struct sched_dl_entity *dl_se;
+@@ -439,6 +554,8 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+ 	dl_se->dl_bw = new_bw;
+ 	dl_se->dl_density = new_bw;
+ 
++	tg_server_update_dl_rq(dl_se);
++
+ 	parent = dl_se->parent;
+ 	/* Root task group has no explicit server entry, skip parent bandwidth tweaks. */
+ 	if (tg->parent && tg->parent != &root_task_group && parent &&
+@@ -1344,6 +1461,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
+ 	struct task_struct *p;
+ 	struct rq_flags rf;
+ 	struct rq *rq;
++	struct rq *task_rq;
+ 
+ 	if (dl_server(dl_se))
+ 		return dl_server_timer(timer, dl_se);
+@@ -1411,7 +1529,26 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
+ 		 */
+ 	}
+ 
+-	enqueue_task_dl(rq, p, ENQUEUE_REPLENISH);
++	task_rq = rq;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	{
++		struct rq_flags vrf;
++		bool vrq_locked = false;
++
++		task_rq = tg_server_rq_of_task(rq, p);
++		if (task_rq != rq) {
++			tg_server_vrq_lock(task_rq, &vrf);
++			vrq_locked = true;
++		}
++
++		enqueue_task_dl(task_rq, p, ENQUEUE_REPLENISH);
++		tg_server_enqueue(task_rq, p, ENQUEUE_REPLENISH);
++		if (vrq_locked)
++			tg_server_vrq_unlock(task_rq, &vrf);
++	}
++#else
++	enqueue_task_dl(task_rq, p, ENQUEUE_REPLENISH);
++#endif
+ 	if (dl_task(rq->donor))
+ 		wakeup_preempt_dl(rq, p, 0);
+ 	else
+@@ -1727,6 +1864,9 @@ void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
+ 		    dl_server_pick_f pick_task)
+ {
+ 	dl_se->rq = rq;
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	dl_se->dl_rq = &rq->dl;
++#endif
+ 	dl_se->server_pick_task = pick_task;
+ }
+ 
+@@ -1844,6 +1984,12 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+ 	struct sched_dl_entity *dl_se = container_of(timer,
+ 						     struct sched_dl_entity,
+ 						     inactive_timer);
++	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
++	struct rq *dl_rq_rq = rq_of_dl_rq(dl_rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct rq_flags vrf;
++	bool vrq_locked = false;
++#endif
+ 	struct task_struct *p = NULL;
+ 	struct rq_flags rf;
+ 	struct rq *rq;
+@@ -1862,12 +2008,24 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+ 	if (dl_server(dl_se))
+ 		goto no_task;
+ 
++	/*
++	 * For TG bandwidth servers the dl entity lives on a virtual rq. Make
++	 * sure we hold the correct rq lock before touching its bandwidth
++	 * accounting.
++	 */
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (dl_rq_rq != rq) {
++		tg_server_vrq_lock(dl_rq_rq, &vrf);
++		vrq_locked = true;
++	}
++#endif
++
+ 	if (!dl_task(p) || READ_ONCE(p->__state) == TASK_DEAD) {
+ 		struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+ 
+ 		if (READ_ONCE(p->__state) == TASK_DEAD && dl_se->dl_non_contending) {
+-			sub_running_bw(&p->dl, dl_rq_of_se(&p->dl));
+-			sub_rq_bw(&p->dl, dl_rq_of_se(&p->dl));
++			sub_running_bw(&p->dl, dl_rq);
++			sub_rq_bw(&p->dl, dl_rq);
+ 			dl_se->dl_non_contending = 0;
+ 		}
+ 
+@@ -1883,9 +2041,13 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+ 	if (dl_se->dl_non_contending == 0)
+ 		goto unlock;
+ 
+-	sub_running_bw(dl_se, &rq->dl);
++	sub_running_bw(dl_se, dl_rq);
+ 	dl_se->dl_non_contending = 0;
+ unlock:
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (vrq_locked)
++		tg_server_vrq_unlock(dl_rq_rq, &vrf);
++#endif
+ 
+ 	if (!dl_server(dl_se)) {
+ 		task_rq_unlock(rq, p, &rf);
+@@ -2105,6 +2267,12 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
+ 		add_rq_bw(dl_se, dl_rq);
+ 		add_running_bw(dl_se, dl_rq);
+ 	}
++	if (flags & (ENQUEUE_MOVE)) {
++		struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
++
++		add_rq_bw(dl_se, dl_rq);
++		add_running_bw(dl_se, dl_rq);
++	}
+ 
+ 	/*
+ 	 * If p is throttled, we do not enqueue it. In fact, if it exhausted
+@@ -2167,7 +2335,7 @@ static void dequeue_dl_entity(struct sched_dl_entity *dl_se, int flags)
+ {
+ 	__dequeue_dl_entity(dl_se);
+ 
+-	if (flags & (DEQUEUE_SAVE|DEQUEUE_MIGRATING)) {
++	if (flags & (DEQUEUE_SAVE|DEQUEUE_MIGRATING|DEQUEUE_MOVE)) {
+ 		struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
+ 
+ 		sub_running_bw(dl_se, dl_rq);
+@@ -2355,6 +2523,12 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
+ {
+ 	struct rq_flags rf;
+ 	struct rq *rq;
++	struct dl_rq *dl_rq = dl_rq_of_se(&p->dl);
++	struct rq *dl_rq_rq = rq_of_dl_rq(dl_rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct rq_flags vrf;
++	bool vrq_locked = false;
++#endif
+ 
+ 	if (READ_ONCE(p->__state) != TASK_WAKING)
+ 		return;
+@@ -2366,9 +2540,17 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
+ 	 * rq->lock is not... So, lock it
+ 	 */
+ 	rq_lock(rq, &rf);
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (dl_rq_rq != rq) {
++		tg_server_vrq_lock(dl_rq_rq, &vrf);
++		vrq_locked = true;
++	}
++#endif
++
+ 	if (p->dl.dl_non_contending) {
+ 		update_rq_clock(rq);
+-		sub_running_bw(&p->dl, &rq->dl);
++		sub_running_bw(&p->dl, dl_rq);
+ 		p->dl.dl_non_contending = 0;
+ 		/*
+ 		 * If the timer handler is currently running and the
+@@ -2379,7 +2561,11 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
+ 		 */
+ 		cancel_inactive_timer(&p->dl);
+ 	}
+-	sub_rq_bw(&p->dl, &rq->dl);
++	sub_rq_bw(&p->dl, dl_rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (vrq_locked)
++		tg_server_vrq_unlock(dl_rq_rq, &vrf);
++#endif
+ 	rq_unlock(rq, &rf);
+ }
+ 
+@@ -2523,6 +2709,13 @@ static struct task_struct *pick_task_dl(struct rq *rq)
+ 	return __pick_task_dl(rq);
+ }
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++struct task_struct *tg_server_pick_dl_task(struct rq *rq)
++{
++	return pick_task_dl(rq);
++}
++#endif
++
+ static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
+ {
+ 	struct sched_dl_entity *dl_se = &p->dl;
+@@ -3099,9 +3292,26 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
+ 		 * some other class. We need to remove its contribution from
+ 		 * this rq running_bw now, or sub_rq_bw (below) will complain.
+ 		 */
++		struct dl_rq *dl_rq = dl_rq_of_se(&p->dl);
++		struct rq *dl_rq_rq = rq_of_dl_rq(dl_rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		struct rq_flags vrf;
++		bool vrq_locked = false;
++
++		if (dl_rq_rq != rq) {
++			tg_server_vrq_lock(dl_rq_rq, &vrf);
++			vrq_locked = true;
++		}
++#endif
++
+ 		if (p->dl.dl_non_contending)
+-			sub_running_bw(&p->dl, &rq->dl);
+-		sub_rq_bw(&p->dl, &rq->dl);
++			sub_running_bw(&p->dl, dl_rq);
++		sub_rq_bw(&p->dl, dl_rq);
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		if (vrq_locked)
++			tg_server_vrq_unlock(dl_rq_rq, &vrf);
++#endif
+ 	}
+ 
+ 	/*
+@@ -3139,7 +3349,24 @@ static void switched_to_dl(struct rq *rq, struct task_struct *p)
+ 
+ 	/* If p is not queued we will update its parameters at next wakeup. */
+ 	if (!task_on_rq_queued(p)) {
+-		add_rq_bw(&p->dl, &rq->dl);
++		struct dl_rq *dl_rq = dl_rq_of_se(&p->dl);
++		struct rq *dl_rq_rq = rq_of_dl_rq(dl_rq);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		struct rq_flags vrf;
++		bool vrq_locked = false;
++
++		if (dl_rq_rq != rq) {
++			tg_server_vrq_lock(dl_rq_rq, &vrf);
++			vrq_locked = true;
++		}
++#endif
++
++		add_rq_bw(&p->dl, dl_rq);
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++		if (vrq_locked)
++			tg_server_vrq_unlock(dl_rq_rq, &vrf);
++#endif
+ 
+ 		return;
+ 	}
+@@ -3227,6 +3454,9 @@ DEFINE_SCHED_CLASS(dl) = {
+ 	.task_tick		= task_tick_dl,
+ 	.task_fork              = task_fork_dl,
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	.task_change_group	= task_change_group_dl,
++#endif
+ 	.prio_changed           = prio_changed_dl,
+ 	.switched_from		= switched_from_dl,
+ 	.switched_to		= switched_to_dl,
+@@ -3291,6 +3521,17 @@ int sched_dl_global_validate(void)
+ 
+ static void init_dl_rq_bw_ratio(struct dl_rq *dl_rq)
+ {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	struct rq *rq = container_of(dl_rq, struct rq, dl);
++
++	if (rq != cpu_rq(cpu_of(rq))) {
++		dl_rq->bw_ratio = 0;
++		dl_rq->max_bw = 0;
++		dl_rq->extra_bw = 0;
++		return;
++	}
++#endif
++
+ 	if (global_rt_runtime() == RUNTIME_INF) {
+ 		dl_rq->bw_ratio = 1 << RATIO_SHIFT;
+ 		dl_rq->max_bw = dl_rq->extra_bw = 1 << BW_SHIFT;
+@@ -3521,6 +3762,9 @@ void init_dl_entity(struct sched_dl_entity *dl_se)
+ 	init_dl_task_timer(dl_se);
+ 	init_dl_inactive_task_timer(dl_se);
+ 	__dl_clear_params(dl_se);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	dl_se->dl_rq = NULL;
++#endif
+ }
+ 
+ bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr)
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index e46351528705..8282e4178097 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -430,6 +430,7 @@ extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
+ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
+ extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
+ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
++extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
+ #endif
+ 
+ extern void dl_server_update_idle_time(struct rq *rq,
+@@ -960,6 +961,10 @@ struct dl_rq {
+ 	 * by the GRUB algorithm.
+ 	 */
+ 	u64			bw_ratio;
++
++#if defined(CONFIG_TG_BANDWIDTH_SERVER)
++	struct rq		*rq;	/* Runqueue (physical or virtual) owning this dl_rq */
++#endif
+ };
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+@@ -2239,9 +2244,11 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+ 	if (!tg || tg == &root_task_group) {
+ 		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
+ 		p->rt.rt_rq = &cpu_rq(cpu)->rt;
++		p->dl.dl_rq = &cpu_rq(cpu)->dl;
+ 	} else if (tg->tg_server) {
+ 		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
+ 		p->rt.rt_rq = &tg->tg_server[cpu]->vrq->rt;
++		p->dl.dl_rq = &tg->tg_server[cpu]->vrq->dl;
+ 	}
+ #endif
+ 
+@@ -2552,7 +2559,7 @@ struct sched_class {
+ 
+ 	void (*update_curr)(struct rq *rq);
+ 
+-#ifdef CONFIG_FAIR_GROUP_SCHED
++#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
+ 	void (*task_change_group)(struct task_struct *p);
+ #endif
+ 
+-- 
+2.43.0
+
