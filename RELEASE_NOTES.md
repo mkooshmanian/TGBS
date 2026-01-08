@@ -1,26 +1,22 @@
-# TGBS v1.0 release notes
+# TGBS v1.1 release notes
 
-TGBS v1.0 is the first TGBS feature release. It introduces a new scheduler
-feature on top of Linux v6.17; it is not a port of an earlier TGBS release.
+TGBS v1.1 is a feature update to v1.0 on the same Linux v6.17 kernel base.
+It adds multicore placement and balancing for TGBS virtual runqueues.
 
-## What this version introduces
+## What changed in v1.1
 
-- `CONFIG_TG_BANDWIDTH_SERVER` and per-CPU deadline servers for non-root CPU
-  cgroups;
-- full virtual runqueues for tasks managed by a TGBS reservation;
-- `cpu.runtime_us` and `cpu.period_us` controls;
-- hierarchical bandwidth admission checks;
-- common CBS budget accounting and throttling for FAIR, RT, and DEADLINE
-  tasks in the same cgroup;
-- native Linux class selection inside each group, in DEADLINE, RT, then FAIR
-  order;
-- scheduler integration for virtual-runqueue clocks, ticks, wake-ups,
-  context switches, and task-group changes;
-- tracepoints for server lifecycle, runtime accounting, throttling, and task
-  selection.
+- Wake-up placement now selects the lightest TGBS virtual runqueue for FAIR
+  tasks and applies capacity-aware selection for RT and DEADLINE tasks. Idle,
+  unthrottled servers are preferred.
+- An idle virtual runqueue can pull a migratable task from a sibling
+  runqueue in the same task group instead of stopping immediately.
+- Server throttling pushes runnable tasks to non-throttled sibling servers.
+  Replenishment pulls work back when available or stops an empty server.
+- Throttle and unthrottle balancing runs through per-runqueue `irq_work` so
+  migration occurs outside the deadline tick/timer locking context.
 
 ## Compatibility
 
-This release targets the exact Linux v6.17 tag. It requires `CGROUP_SCHED`
-and is incompatible with `RT_GROUP_SCHED`, `FAIR_GROUP_SCHED`, and
-`SCHED_CLASS_EXT`.
+This release targets the exact Linux v6.17 tag and retains the v1.0
+configuration constraints: it requires `CGROUP_SCHED` and is incompatible
+with `RT_GROUP_SCHED`, `FAIR_GROUP_SCHED`, and `SCHED_CLASS_EXT`.
