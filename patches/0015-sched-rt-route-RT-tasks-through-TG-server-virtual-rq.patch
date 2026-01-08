@@ -1,0 +1,230 @@
+From f92b8887ed8773aaede6f29572e81a1a66a218ea Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Mon, 8 Dec 2025 15:55:56 +0100
+Subject: [PATCH 15/19] sched/rt: route RT tasks through TG server virtual rq
+
+Attach RT sched_entities to the server virtual runqueue so bandwidth servers
+can reuse the RT picker. Cache the rt_rq pointer in sched_rt_entity, provide
+the rt helper wrappers for the server build, and let set_task_rq() assign the
+server vrq so the queues stay consistent.
+
+Expose tg_server_pick_rt_task(), call it before the FAIR picker, and teach
+task_is_throttled_rt() to look at the server vrq when present so server
+managed groups obey throttling.
+---
+ include/linux/sched.h |  8 +++--
+ kernel/sched/core.c   |  6 ++++
+ kernel/sched/rt.c     | 69 ++++++++++++++++++++++++++++++++++++++++---
+ kernel/sched/sched.h  | 10 +++++--
+ 4 files changed, 85 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index aedb46d73194..9d27869bd4ba 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -628,10 +628,14 @@ struct sched_rt_entity {
+ 	unsigned short			on_list;
+ 
+ 	struct sched_rt_entity		*back;
+-#ifdef CONFIG_RT_GROUP_SCHED
+-	struct sched_rt_entity		*parent;
++
++#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
+ 	/* rq on which this entity is (to be) queued: */
+ 	struct rt_rq			*rt_rq;
++#endif
++
++#ifdef CONFIG_RT_GROUP_SCHED
++	struct sched_rt_entity		*parent;
+ 	/* rq "owned" by this entity/group: */
+ 	struct rt_rq			*my_q;
+ #endif
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index f45fe9f50898..840fdce5b9b4 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -9075,6 +9075,7 @@ void __init sched_init(void)
+ 		/* Root task group has no parent: keep entries NULL to stop traversal here. */
+ 		root_task_group.tg_server[i] = NULL;
+ 		rq->cfs.rq = rq;
++		rq->rt.rq = rq;
+ #endif
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
+@@ -9552,6 +9553,10 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+ 		return NULL;
+ 	tg_server_vrq_lock(vrq, &vrf);
+ 
++	p = tg_server_pick_rt_task(vrq);
++	if (p)
++		goto out;
++
+ 	p = tg_server_pick_fair_task(vrq);
+ 
+ out:
+@@ -9568,6 +9573,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 	server->parent = parent;
+ 	tg->tg_server[cpu] = server;
+ 	vrq->cfs.rq = vrq;
++	vrq->rt.rq = vrq;
+ }
+ 
+ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index 7936d4333731..d6bca40acf22 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -94,7 +94,7 @@ void init_rt_rq(struct rt_rq *rt_rq)
+ #endif
+ }
+ 
+-#ifdef CONFIG_RT_GROUP_SCHED
++#if defined(CONFIG_RT_GROUP_SCHED)
+ 
+ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
+ 
+@@ -292,7 +292,55 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
+ 	return 0;
+ }
+ 
+-#else /* !CONFIG_RT_GROUP_SCHED: */
++#elif defined(CONFIG_TG_BANDWIDTH_SERVER)
++
++#define rt_entity_is_task(rt_se) (1)
++
++static inline struct task_struct *rt_task_of(struct sched_rt_entity *rt_se)
++{
++	return container_of(rt_se, struct task_struct, rt);
++}
++
++static inline struct rq *rq_of_rt_rq(struct rt_rq *rt_rq)
++{
++	if (WARN_ON_ONCE(!rt_rq))
++		return NULL;
++	if (WARN_ON_ONCE(!rt_rq->rq))
++		return NULL;
++	return rt_rq->rq;
++}
++
++static inline struct rt_rq *rt_rq_of_se(struct sched_rt_entity *rt_se)
++{
++	struct rt_rq *rt_rq = rt_se->rt_rq;
++
++	if (unlikely(!rt_rq)) {
++		struct task_struct *p = rt_task_of(rt_se);
++
++		WARN_ON_ONCE(!rt_rq);
++		return &task_rq(p)->rt;
++	}
++
++	return rt_rq;
++}
++
++static inline struct rq *rq_of_rt_se(struct sched_rt_entity *rt_se)
++{
++	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
++
++	return rq_of_rt_rq(rt_rq);
++}
++
++void unregister_rt_sched_group(struct task_group *tg) { }
++
++void free_rt_sched_group(struct task_group *tg) { }
++
++int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
++{
++	return 1;
++}
++
++#else /* !CONFIG_RT_GROUP_SCHED && !CONFIG_TG_BANDWIDTH_SERVER */
+ 
+ #define rt_entity_is_task(rt_se) (1)
+ 
+@@ -328,7 +376,7 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
+ {
+ 	return 1;
+ }
+-#endif /* !CONFIG_RT_GROUP_SCHED */
++#endif /* CONFIG_RT_GROUP_SCHED || CONFIG_TG_BANDWIDTH_SERVER */
+ 
+ static inline bool need_pull_rt_task(struct rq *rq, struct task_struct *prev)
+ {
+@@ -1707,6 +1755,13 @@ static struct task_struct *pick_task_rt(struct rq *rq)
+ 	return p;
+ }
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++struct task_struct *tg_server_pick_rt_task(struct rq *rq)
++{
++	return pick_task_rt(rq);
++}
++#endif
++
+ static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
+ {
+ 	struct sched_rt_entity *rt_se = &p->rt;
+@@ -2553,9 +2608,15 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
+ {
+ 	struct rt_rq *rt_rq;
+ 
+-#ifdef CONFIG_RT_GROUP_SCHED // XXX maybe add task_rt_rq(), see also sched_rt_period_rt_rq
++#ifdef CONFIG_RT_GROUP_SCHED
+ 	rt_rq = task_group(p)->rt_rq[cpu];
+ 	WARN_ON(!rt_group_sched_enabled() && rt_rq->tg != &root_task_group);
++#elif defined(CONFIG_TG_BANDWIDTH_SERVER)
++	{
++		struct rq *task_rq = tg_server_rq_of_task(cpu_rq(cpu), p);
++
++		rt_rq = &task_rq->rt;
++	}
+ #else
+ 	rt_rq = &cpu_rq(cpu)->rt;
+ #endif
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 1a5896d71943..e46351528705 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -429,6 +429,7 @@ extern void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags);
+ extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
+ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
+ extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
++extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
+ #endif
+ 
+ extern void dl_server_update_idle_time(struct rq *rq,
+@@ -878,6 +879,10 @@ struct rt_rq {
+ 
+ 	int			rt_queued;
+ 
++#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_TG_BANDWIDTH_SERVER)
++	struct rq		*rq; /* Runqueue (physical or virtual) owning this rt_rq */
++#endif
++
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	int			rt_throttled;
+ 	u64			rt_time; /* consumed RT time, goes up in update_curr_rt */
+@@ -886,9 +891,8 @@ struct rt_rq {
+ 	raw_spinlock_t		rt_runtime_lock;
+ 
+ 	unsigned int		rt_nr_boosted;
+-
+-	struct rq		*rq; /* this is always top-level rq, cache? */
+ #endif
++
+ #ifdef CONFIG_CGROUP_SCHED
+ 	struct task_group	*tg; /* this tg has "this" rt_rq on given CPU for runnable entities */
+ #endif
+@@ -2234,8 +2238,10 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+ 	if (!tg || tg == &root_task_group) {
+ 		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
++		p->rt.rt_rq = &cpu_rq(cpu)->rt;
+ 	} else if (tg->tg_server) {
+ 		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
++		p->rt.rt_rq = &tg->tg_server[cpu]->vrq->rt;
+ 	}
+ #endif
+ 
+-- 
+2.43.0
+

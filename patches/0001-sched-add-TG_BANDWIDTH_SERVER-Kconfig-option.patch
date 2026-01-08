@@ -1,0 +1,59 @@
+From 2881f1ce186fa9fcb3c2186ebcc72578155c4c4f Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Wed, 29 Oct 2025 13:24:29 +0100
+Subject: [PATCH 01/19] sched: add TG_BANDWIDTH_SERVER Kconfig option
+
+Introduce a dedicated Kconfig toggle so the Task Group Bandwidth Server
+can be enabled whenever CGROUP_SCHED and SCHED_DEADLINE are available.
+The help text explains that the feature wraps deadline accounting to
+enforce a CBS budget per task_group.
+
+The tree is also tagged with EXTRAVERSION=-tgbs so builds carry an
+explicit tgbs identifier.
+---
+ Makefile     |  2 +-
+ init/Kconfig | 15 +++++++++++++++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 82bb9cdf73a3..dc957d3832e2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,7 @@
+ VERSION = 6
+ PATCHLEVEL = 17
+ SUBLEVEL = 0
+-EXTRAVERSION =
++EXTRAVERSION = -tgbs
+ NAME = Baby Opossum Posse
+ 
+ # *DOCUMENTATION*
+diff --git a/init/Kconfig b/init/Kconfig
+index ecddb94db8dc..4aeb61d6158f 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1142,6 +1142,21 @@ config EXT_GROUP_SCHED
+ 	select GROUP_SCHED_BANDWIDTH
+ 	default y
+ 
++config TG_BANDWIDTH_SERVER
++	bool "Task group bandwidth server"
++	depends on CGROUP_SCHED && !RT_GROUP_SCHED && !FAIR_GROUP_SCHED && !SCHED_CLASS_EXT
++	default n
++	help
++	  Enable a per-task-group Constant Bandwidth Server (CBS) to limit
++	  CPU bandwidth consumption of grouped tasks.
++	  This creates a deadline server at the task_group level which enforces
++	  a fixed runtime/period budget for all tasks in the group. When the
++	  group's runtime is exhausted, the entire group is throttled until the
++	  next replenishment period.
++	  Internally this relies on SCHED_DEADLINE mechanisms to implement
++	  the Constant Bandwidth Server logic at the cgroup/task_group scope
++	  rather than at per-task granularity.
++
+ endif #CGROUP_SCHED
+ 
+ config SCHED_MM_CID
+-- 
+2.43.0
+
