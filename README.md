@@ -49,7 +49,7 @@ The following publication describes the design, analysis, and implementation of 
 - **Towards Multi-Policy Hierarchical Scheduling in Linux for Containerized Space Applications**
   *M. Kooshmanian, J. Ermont, L. Miné, S. Corbin, F. Boniol*
   European Congress on Embedded Real-Time Systems (ECRTS), 2026
-  (DOI to be added)
+  doi: 10.82331/ERTS.2026.34
 
 ## Repository Organization
 
