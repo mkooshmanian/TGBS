@@ -1,7 +1,7 @@
-From e4d96e3577391f8ae15a9fa87adb693aab230660 Mon Sep 17 00:00:00 2001
+From 8d72adc92f00ca9b3f8543ede886f67c7d42d1e3 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:45:40 +0100
-Subject: [PATCH 04/19] sched/core: expose task group bandwidth knobs via cpu 
+Subject: [PATCH 04/22] sched/core: expose task group bandwidth knobs via cpu 
  cgroup
 
 ---
@@ -9,10 +9,10 @@ Subject: [PATCH 04/19] sched/core: expose task group bandwidth knobs via cpu
  1 file changed, 40 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 6522b4463552..5758a2cb622b 100644
+index 3ad1b90fc155..bbd457e104bd 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9708,6 +9708,32 @@ static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)
+@@ -9676,6 +9676,32 @@ static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)
  	scx_cgroup_cancel_attach(tset);
  }
  
@@ -45,7 +45,7 @@ index 6522b4463552..5758a2cb622b 100644
  #ifdef CONFIG_UCLAMP_TASK_GROUP
  static void cpu_util_update_eff(struct cgroup_subsys_state *css)
  {
-@@ -10607,6 +10633,20 @@ static ssize_t cpu_max_write(struct kernfs_open_file *of,
+@@ -10575,6 +10601,20 @@ static ssize_t cpu_max_write(struct kernfs_open_file *of,
  #endif /* CONFIG_CFS_BANDWIDTH */
  
  static struct cftype cpu_files[] = {

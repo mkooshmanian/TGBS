@@ -1,7 +1,7 @@
-From 962ca95b631bbf8daaba5d1eed22e74fc92d2cc1 Mon Sep 17 00:00:00 2001
+From 841037159d3f5d92b13248ead9961f8c4fdf8731 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:25:54 +0100
-Subject: [PATCH 18/19] schd/tgbs: lock virtual rq for class change callbacks
+Subject: [PATCH 18/22] schd/tgbs: lock virtual rq for class change callbacks
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -16,10 +16,10 @@ groups manipulate tasks on non-root VRQs.
  1 file changed, 36 insertions(+), 4 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index c5db2ce7ad27..b3c5d4fa6ea1 100644
+index 702d603be165..849c8f805040 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -2373,8 +2373,24 @@ inline int task_curr(const struct task_struct *p)
+@@ -2375,8 +2375,24 @@ inline int task_curr(const struct task_struct *p)
  void check_class_changing(struct rq *rq, struct task_struct *p,
  			  const struct sched_class *prev_class)
  {
@@ -45,7 +45,7 @@ index c5db2ce7ad27..b3c5d4fa6ea1 100644
  }
  
  /*
-@@ -2388,13 +2404,29 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
+@@ -2390,13 +2406,29 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
  			 const struct sched_class *prev_class,
  			 int oldprio)
  {
