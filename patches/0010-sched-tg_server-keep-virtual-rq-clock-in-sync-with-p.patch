@@ -1,7 +1,7 @@
-From 67f137ec01b7dc151bdd52a7503f89e34b704859 Mon Sep 17 00:00:00 2001
+From 8027f85021fd1f8337eed26239939386e56f3089 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:04:44 +0100
-Subject: [PATCH 10/19] sched/tg_server: keep virtual rq clock in sync with
+Subject: [PATCH 10/22] sched/tg_server: keep virtual rq clock in sync with
  physical rq
 
 The TG virtual runqueue reuses rq_clock_task(), but its clock never advanced
@@ -19,10 +19,10 @@ with the physical rq for accounting and timer programming.
  4 files changed, 136 insertions(+), 4 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 3460b6b63600..a89ffed55cb9 100644
+index a69395c3cd94..06700a11e762 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -2080,6 +2080,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
+@@ -2082,6 +2082,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
  	__balance_callbacks(rq);
  	raw_spin_rq_unlock(rq);
  }
@@ -55,7 +55,7 @@ index 3460b6b63600..a89ffed55cb9 100644
  #endif
  
  bool sched_task_on_rq(struct task_struct *p)
-@@ -5574,9 +5600,23 @@ unsigned long long task_sched_runtime(struct task_struct *p)
+@@ -5542,9 +5568,23 @@ unsigned long long task_sched_runtime(struct task_struct *p)
  	 * thread, breaking clock_gettime().
  	 */
  	if (task_current_donor(rq, p) && task_on_rq_queued(p)) {
@@ -80,7 +80,7 @@ index 3460b6b63600..a89ffed55cb9 100644
  	ns = p->se.sum_exec_runtime;
  	task_rq_unlock(rq, p, &rf);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 11f07da0a2c7..36c32b7a3c56 100644
+index 8d69f7971dd7..de81abb4b7e6 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -1190,6 +1190,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
@@ -107,7 +107,7 @@ index 11f07da0a2c7..36c32b7a3c56 100644
  	 * We want the timer to fire at the deadline, but considering
  	 * that it is actually coming from rq->clock and not from
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index 8ce56a8d507f..2467136d9c4e 100644
+index 5b752324270b..15a70b325e20 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
 @@ -1154,6 +1154,14 @@ void post_init_entity_util_avg(struct task_struct *p)
@@ -163,7 +163,7 @@ index 8ce56a8d507f..2467136d9c4e 100644
  }
  
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 7e8a241136f8..64ac0d489385 100644
+index 661a69c49ba5..c66ddc361213 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -424,6 +424,7 @@ extern void sched_init_dl_servers(void);
@@ -174,7 +174,7 @@ index 7e8a241136f8..64ac0d489385 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -2517,15 +2518,59 @@ struct sched_class {
+@@ -2521,15 +2522,59 @@ struct sched_class {
  #endif
  };
  
@@ -236,7 +236,7 @@ index 7e8a241136f8..64ac0d489385 100644
  }
  
  static inline void
-@@ -2549,8 +2594,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
+@@ -2553,8 +2598,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
  	if (next == prev)
  		return;
  

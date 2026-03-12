@@ -1,7 +1,7 @@
-From 9b69e4161dd5067f04c71a2ec9f7726b6810e45c Mon Sep 17 00:00:00 2001
+From 336ffc554a70998becbab88ebee247998e0df992 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 26 Nov 2025 10:10:43 +0100
-Subject: [PATCH 19/19] sched: add TG bandwidth server tracepoints
+Subject: [PATCH 19/22] sched: add TG bandwidth server tracepoints
 
 Add tracepoints for TG bandwidth server start/stop, throttle/unthrottle, runtime
 accounting, and pick decisions to ease debugging with cgroup context.
@@ -192,10 +192,10 @@ index 7b2645b50e78..1168899e088c 100644
   * Following tracepoints are not exported in tracefs and provide hooking
   * mechanisms only for testing and debugging purposes.
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b3c5d4fa6ea1..a1c74f7fa2c2 100644
+index 849c8f805040..95d53dfc931a 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -2184,8 +2184,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
+@@ -2186,8 +2186,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  
  	BUG_ON(vrq != server->vrq);
  
@@ -213,7 +213,7 @@ index b3c5d4fa6ea1..a1c74f7fa2c2 100644
  }
  
  void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
-@@ -2204,8 +2212,16 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2206,8 +2214,16 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  
  	BUG_ON(vrq != server->vrq);
  
@@ -231,7 +231,7 @@ index b3c5d4fa6ea1..a1c74f7fa2c2 100644
  }
  
  void tg_server_account_runtime(struct rq *rq,
-@@ -2228,7 +2244,46 @@ void tg_server_account_runtime(struct rq *rq,
+@@ -2230,7 +2246,46 @@ void tg_server_account_runtime(struct rq *rq,
  	if (!server)
  		return;
  
@@ -278,7 +278,7 @@ index b3c5d4fa6ea1..a1c74f7fa2c2 100644
  }
  #endif
  
-@@ -9573,6 +9628,7 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+@@ -9543,6 +9598,7 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  	struct task_struct *p;
  	struct rq_flags vrf;
  	struct rq *parent_rq;
@@ -286,7 +286,7 @@ index b3c5d4fa6ea1..a1c74f7fa2c2 100644
  
  	if (WARN_ON_ONCE(!dl_se))
  		return NULL;
-@@ -9597,6 +9653,18 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+@@ -9567,6 +9623,18 @@ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  	p = tg_server_pick_fair_task(vrq);
  
  out:
@@ -306,7 +306,7 @@ index b3c5d4fa6ea1..a1c74f7fa2c2 100644
  	return p;
  }
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index fc240774300c..35cc3d45e970 100644
+index 1f4acbb06335..3f70c29c289b 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -1080,8 +1080,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
@@ -337,7 +337,7 @@ index fc240774300c..35cc3d45e970 100644
  		if (dl_runtime_exceeded(dl_se) &&
  		    (dl_se->flags & SCHED_FLAG_DL_OVERRUN))
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 8282e4178097..56b08125731b 100644
+index c84d1fb5d403..5cc0d16f3942 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -431,6 +431,8 @@ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64

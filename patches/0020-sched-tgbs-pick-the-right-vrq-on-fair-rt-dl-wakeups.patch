@@ -1,4 +1,4 @@
-From 0f0fe9578d8343a80b147f2068ded5689a1c32d1 Mon Sep 17 00:00:00 2001
+From 1b84823217140bd7d29d3f7397c52e2307c3eff6 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 11:09:28 +0100
 Subject: [PATCH 20/22] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
@@ -20,10 +20,10 @@ the way for proper multi-core support.
  5 files changed, 172 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index a1c74f7fa2c2..55163532c92c 100644
+index 95d53dfc931a..b4692d5482a2 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -2161,6 +2161,24 @@ unsigned long get_wchan(struct task_struct *p)
+@@ -2163,6 +2163,24 @@ unsigned long get_wchan(struct task_struct *p)
  }
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -48,7 +48,7 @@ index a1c74f7fa2c2..55163532c92c 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -3923,6 +3941,10 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
+@@ -3888,6 +3906,10 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
  		cpu = cpumask_any(p->cpus_ptr);
  	}
  
@@ -60,10 +60,10 @@ index a1c74f7fa2c2..55163532c92c 100644
  	 * In order not to call set_task_cpu() on a blocking task we need
  	 * to rely on ttwu() to place the task on a valid ->cpus_ptr
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 35cc3d45e970..e31ad104232c 100644
+index 3f70c29c289b..d7933b58e5fd 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -2730,6 +2730,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
+@@ -2733,6 +2733,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
  {
  	return pick_task_dl(rq);
  }
@@ -106,10 +106,10 @@ index 35cc3d45e970..e31ad104232c 100644
  
  static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index beeec3dc7aaa..d4115679f948 100644
+index df2f1abf05d6..6ffdf0bc553a 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
-@@ -8899,6 +8899,38 @@ struct task_struct *tg_server_pick_fair_task(struct rq *rq)
+@@ -8997,6 +8997,38 @@ struct task_struct *tg_server_pick_fair_task(struct rq *rq)
  {
  	return pick_task_fair(rq);
  }
@@ -223,7 +223,7 @@ index d6bca40acf22..03144dd54343 100644
  
  static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index ee21f8654457..c6e14a26f672 100644
+index 5cc0d16f3942..4a24eb56eb4d 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -551,6 +551,30 @@ struct task_group {

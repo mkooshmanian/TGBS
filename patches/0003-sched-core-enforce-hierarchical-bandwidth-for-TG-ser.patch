@@ -1,7 +1,7 @@
-From c63515246837659f00cf0b7af81d290b4d083a49 Mon Sep 17 00:00:00 2001
+From 3dc90d8c6e7e392b02b178e3c5ae790f960bba33 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 2 Nov 2025 14:24:20 +0100
-Subject: [PATCH 03/19] sched/core: enforce hierarchical bandwidth for TG
+Subject: [PATCH 03/22] sched/core: enforce hierarchical bandwidth for TG
  servers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -26,10 +26,10 @@ Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
  2 files changed, 234 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 19b6b1da07c2..6522b4463552 100644
+index 2dd07ca7d2c1..3ad1b90fc155 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -1383,7 +1383,7 @@ bool sched_can_stop_tick(struct rq *rq)
+@@ -1385,7 +1385,7 @@ bool sched_can_stop_tick(struct rq *rq)
  }
  #endif /* CONFIG_NO_HZ_FULL */
  
@@ -38,7 +38,7 @@ index 19b6b1da07c2..6522b4463552 100644
  /*
   * Iterate task_group tree rooted at *from, calling @down when first entering a
   * node and @up when leaving it for the final time.
-@@ -9120,6 +9120,88 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
+@@ -9090,6 +9090,88 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
  }
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -127,7 +127,7 @@ index 19b6b1da07c2..6522b4463552 100644
  static struct task_struct *
  tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  {
-@@ -9205,6 +9287,153 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -9175,6 +9257,153 @@ void free_tg_bandwidth_server(struct task_group *tg)
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
  }
@@ -282,7 +282,7 @@ index 19b6b1da07c2..6522b4463552 100644
  
  static void sched_free_group(struct task_group *tg)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index f8b71634d456..16dbe8850379 100644
+index 0685944bafa8..a2f2dd5db5d9 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -577,15 +577,14 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,

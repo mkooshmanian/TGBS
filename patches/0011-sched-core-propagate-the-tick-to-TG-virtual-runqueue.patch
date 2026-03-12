@@ -1,7 +1,7 @@
-From 284c81a976e795f5812d3babaec078ce384640df Mon Sep 17 00:00:00 2001
+From b75c2ea79bd925754b806afc20807945f1f7fe69 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:07:02 +0100
-Subject: [PATCH 11/19] sched/core: propagate the tick to TG virtual runqueues
+Subject: [PATCH 11/22] sched/core: propagate the tick to TG virtual runqueues
 
 Tasks under a TG bandwidth server run on a virtual rq, but the tick only hit
 the physical rq, breaking vruntime/slice accounting. Forward both the regular
@@ -13,10 +13,10 @@ changing the existing paths otherwise.
  1 file changed, 101 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index a89ffed55cb9..8c9e9b459036 100644
+index 06700a11e762..ef2cd7c27351 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -870,12 +870,40 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
+@@ -872,12 +872,40 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
  {
  	struct rq *rq = container_of(timer, struct rq, hrtick_timer);
  	struct rq_flags rf;
@@ -57,7 +57,7 @@ index a89ffed55cb9..8c9e9b459036 100644
  	rq_unlock(rq, &rf);
  
  	return HRTIMER_NORESTART;
-@@ -5678,6 +5706,7 @@ void sched_tick(void)
+@@ -5646,6 +5674,7 @@ void sched_tick(void)
  	int cpu = smp_processor_id();
  	struct rq *rq = cpu_rq(cpu);
  	/* accounting goes to the donor task */
@@ -65,7 +65,7 @@ index a89ffed55cb9..8c9e9b459036 100644
  	struct task_struct *donor;
  	struct rq_flags rf;
  	unsigned long hw_pressure;
-@@ -5690,6 +5719,7 @@ void sched_tick(void)
+@@ -5658,6 +5687,7 @@ void sched_tick(void)
  
  	rq_lock(rq, &rf);
  	donor = rq->donor;
@@ -73,7 +73,7 @@ index a89ffed55cb9..8c9e9b459036 100644
  
  	psi_account_irqtime(rq, donor, NULL);
  
-@@ -5700,7 +5730,57 @@ void sched_tick(void)
+@@ -5668,7 +5698,57 @@ void sched_tick(void)
  	if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
  		resched_curr(rq);
  
@@ -131,7 +131,7 @@ index a89ffed55cb9..8c9e9b459036 100644
  	if (sched_feat(LATENCY_WARN))
  		resched_latency = cpu_resched_latency(rq);
  	calc_global_load_tick(rq);
-@@ -5797,7 +5877,28 @@ static void sched_tick_remote(struct work_struct *work)
+@@ -5765,7 +5845,28 @@ static void sched_tick_remote(struct work_struct *work)
  				u64 delta = rq_clock_task(rq) - curr->se.exec_start;
  				WARN_ON_ONCE(delta > (u64)NSEC_PER_SEC * 3);
  			}

@@ -1,7 +1,7 @@
-From 2881f1ce186fa9fcb3c2186ebcc72578155c4c4f Mon Sep 17 00:00:00 2001
+From 44b8132a717b9691bf8ed7033a18effaff1787bf Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:24:29 +0100
-Subject: [PATCH 01/19] sched: add TG_BANDWIDTH_SERVER Kconfig option
+Subject: [PATCH 01/22] sched: add TG_BANDWIDTH_SERVER Kconfig option
 
 Introduce a dedicated Kconfig toggle so the Task Group Bandwidth Server
 can be enabled whenever CGROUP_SCHED and SCHED_DEADLINE are available.
@@ -16,12 +16,12 @@ explicit tgbs identifier.
  2 files changed, 16 insertions(+), 1 deletion(-)
 
 diff --git a/Makefile b/Makefile
-index 82bb9cdf73a3..dc957d3832e2 100644
+index a082a1d7c7d9..6c6e7d4bf501 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -2,7 +2,7 @@
  VERSION = 6
- PATCHLEVEL = 17
+ PATCHLEVEL = 18
  SUBLEVEL = 0
 -EXTRAVERSION =
 +EXTRAVERSION = -tgbs
@@ -29,10 +29,10 @@ index 82bb9cdf73a3..dc957d3832e2 100644
  
  # *DOCUMENTATION*
 diff --git a/init/Kconfig b/init/Kconfig
-index ecddb94db8dc..4aeb61d6158f 100644
+index cab3ad28ca49..c2f5f6df6016 100644
 --- a/init/Kconfig
 +++ b/init/Kconfig
-@@ -1142,6 +1142,21 @@ config EXT_GROUP_SCHED
+@@ -1152,6 +1152,21 @@ config EXT_GROUP_SCHED
  	select GROUP_SCHED_BANDWIDTH
  	default y
  

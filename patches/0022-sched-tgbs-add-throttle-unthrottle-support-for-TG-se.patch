@@ -1,4 +1,4 @@
-From c7bd0401bcfae8c607f33e6ce6fe315ee145b823 Mon Sep 17 00:00:00 2001
+From bad33690e468aa5f292db8cecd242890b6a76958 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 11 Dec 2025 17:06:19 +0100
 Subject: [PATCH 22/22] sched/tgbs: add throttle/unthrottle support for TG
@@ -21,10 +21,10 @@ balancing behaviour without violating scheduler locking rules.
  3 files changed, 278 insertions(+), 14 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
-index ee1a20f4b87c..1b60f743fc64 100644
+index 25991138a647..ac2874f3dba1 100644
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -749,6 +749,10 @@ struct sched_dl_entity {
+@@ -752,6 +752,10 @@ struct sched_dl_entity {
  	struct task_group		*tg;
  	struct rq				*vrq;
  	struct sched_dl_entity	*parent;
@@ -36,10 +36,10 @@ index ee1a20f4b87c..1b60f743fc64 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b93fd8cbed9a..94e7db09c8e1 100644
+index 2f54bcb2bf3c..4d8c90dd2984 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -37,6 +37,8 @@
+@@ -39,6 +39,8 @@
  #include <linux/sched/nohz.h>
  #include <linux/sched/rseq_api.h>
  #include <linux/sched/rt.h>
@@ -48,7 +48,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  
  #include <linux/blkdev.h>
  #include <linux/context_tracking.h>
-@@ -2080,6 +2082,10 @@ static inline void init_uclamp(void) { }
+@@ -2082,6 +2084,10 @@ static inline void init_uclamp(void) { }
  #endif /* !CONFIG_UCLAMP_TASK */
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -59,7 +59,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  static void __balance_callbacks(struct rq *rq);
  
  struct rq *vrq_of_tg(struct task_group *tg, int cpu)
-@@ -2198,10 +2204,22 @@ tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
+@@ -2200,10 +2206,22 @@ tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
  	return tg_server_pull_fair_task_from_cpu(src_rq, dst_cpu);
  }
  
@@ -83,7 +83,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  
  	for_each_possible_cpu(cpu) {
  		struct sched_dl_entity *server;
-@@ -2230,8 +2248,10 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2232,8 +2250,10 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
  		if (!raw_spin_rq_trylock(src_phys))
  			continue;
  
@@ -96,7 +96,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  
  		p = tg_server_pull_task_from_cpu(src_vrq, dst_cpu);
  		if (p) {
-@@ -2239,12 +2259,83 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2241,12 +2261,83 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
  			update_rq_clock(dst_vrq);
  
  			move_queued_task_locked(src_vrq, dst_vrq, p);
@@ -181,7 +181,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  		if (p)
  			return true;
  	}
-@@ -2252,6 +2343,151 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2254,6 +2345,151 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
  	return false;
  }
  
@@ -333,7 +333,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -2306,6 +2542,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2308,6 +2544,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	if (!READ_ONCE(vrq->nr_running)) {
  		bool was_active;
  
@@ -342,7 +342,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  		if (tg_server_pull_task(tg, vrq))
  			return;
  
-@@ -2378,33 +2616,45 @@ void tg_server_account_runtime(struct rq *rq,
+@@ -2380,33 +2618,45 @@ void tg_server_account_runtime(struct rq *rq,
  void tg_server_handle_throttle(struct sched_dl_entity *server)
  {
  	struct rq *rq;
@@ -398,7 +398,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  }
  #endif
  
-@@ -9289,6 +9539,8 @@ void __init sched_init(void)
+@@ -9259,6 +9509,8 @@ void __init sched_init(void)
  		rq->cfs.rq = rq;
  		rq->rt.rq = rq;
  		rq->dl.rq = rq;
@@ -407,7 +407,7 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  #endif
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
-@@ -9801,6 +10053,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -9771,6 +10023,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
  	server->tg = tg;
  	server->vrq = vrq;
  	server->parent = parent;
@@ -418,10 +418,10 @@ index b93fd8cbed9a..94e7db09c8e1 100644
  	vrq->cfs.rq = vrq;
  	vrq->rt.rq = vrq;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 58d4e1970b81..9a8a1815da52 100644
+index e3035c8b9a77..4ee0eb0417bc 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -1235,6 +1235,11 @@ struct rq {
+@@ -1238,6 +1238,11 @@ struct rq {
  
  	struct sched_dl_entity	fair_server;
  

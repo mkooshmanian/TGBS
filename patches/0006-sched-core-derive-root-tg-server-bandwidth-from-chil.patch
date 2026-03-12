@@ -1,7 +1,7 @@
-From f82a549a53484796fc6413ff0f7a3ae665355220 Mon Sep 17 00:00:00 2001
+From 7a72dc6e4e447895edd9439a2a0b9ef6f36b5552 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:56:21 +0100
-Subject: [PATCH 06/19] sched/core: derive root tg server bandwidth from
+Subject: [PATCH 06/22] sched/core: derive root tg server bandwidth from
  children
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,10 +23,10 @@ remains purely implicit.
  3 files changed, 57 insertions(+), 9 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 5758a2cb622b..90ab955a2e02 100644
+index bbd457e104bd..5f3ce89b1d03 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9202,6 +9202,29 @@ static bool tg_has_tasks(struct task_group *tg, bool active_only)
+@@ -9172,6 +9172,29 @@ static bool tg_has_tasks(struct task_group *tg, bool active_only)
  	return ret;
  }
  
@@ -56,7 +56,7 @@ index 5758a2cb622b..90ab955a2e02 100644
  static struct task_struct *
  tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  {
-@@ -9303,6 +9326,32 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -9273,6 +9296,32 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  	unsigned long total, sum = 0;
  	u64 period, runtime, cur_runtime;
  
@@ -89,7 +89,7 @@ index 5758a2cb622b..90ab955a2e02 100644
  	cur_runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
  	period = READ_ONCE(tg->tg_bandwidth.dl_period);
  	runtime = cur_runtime;
-@@ -9342,9 +9391,6 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -9312,9 +9361,6 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  			return -EINVAL;
  	}
  
@@ -99,7 +99,7 @@ index 5758a2cb622b..90ab955a2e02 100644
  	return 0;
  }
  
-@@ -9366,6 +9412,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -9336,6 +9382,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  	unsigned long flags;
  	int ret;
  
@@ -109,7 +109,7 @@ index 5758a2cb622b..90ab955a2e02 100644
  	/* Disable when runtime is zero; otherwise require a valid period. */
  	if (runtime && !period)
  		return -EINVAL;
-@@ -10636,13 +10685,13 @@ static struct cftype cpu_files[] = {
+@@ -10604,13 +10653,13 @@ static struct cftype cpu_files[] = {
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  	{
  		.name = "runtime_us",
@@ -126,7 +126,7 @@ index 5758a2cb622b..90ab955a2e02 100644
  		.write_u64 = cpu_tg_period_write_uint,
  	},
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index bd8601f57ec7..835b33138b28 100644
+index a1aa1376951a..05878bb5861d 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -215,8 +215,7 @@ __dl_overflow(struct dl_bw *dl_b, unsigned long cap, u64 old_bw, u64 new_bw)
@@ -139,7 +139,7 @@ index bd8601f57ec7..835b33138b28 100644
  #endif
  	return dl_b->bw != -1 &&
  	       cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw
-@@ -3123,8 +3122,7 @@ int sched_dl_global_validate(void)
+@@ -3151,8 +3150,7 @@ int sched_dl_global_validate(void)
  	unsigned long flags;
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -150,7 +150,7 @@ index bd8601f57ec7..835b33138b28 100644
  
  	/*
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 16dbe8850379..9c26a8e157fe 100644
+index a2f2dd5db5d9..225827737613 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -577,6 +577,7 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,

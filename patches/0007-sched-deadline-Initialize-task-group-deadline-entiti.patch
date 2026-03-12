@@ -1,7 +1,7 @@
-From 121e257d54163e1f8fcd95af7305ca891d1dab57 Mon Sep 17 00:00:00 2001
+From cc9ad465f76c0881019db747cf34fdfc1baedb0f Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Tue, 4 Nov 2025 11:13:32 +0100
-Subject: [PATCH 07/19] sched/deadline: Initialize task-group deadline entities
+Subject: [PATCH 07/22] sched/deadline: Initialize task-group deadline entities
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -26,10 +26,10 @@ Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
  3 files changed, 125 insertions(+), 2 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 90ab955a2e02..3eb3874d0f36 100644
+index 5f3ce89b1d03..57762fc76051 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9179,7 +9179,7 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+@@ -9149,7 +9149,7 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
  	return 1;
  }
  
@@ -38,7 +38,7 @@ index 90ab955a2e02..3eb3874d0f36 100644
  {
  	struct css_task_iter it;
  	struct task_struct *task;
-@@ -9298,11 +9298,29 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -9268,11 +9268,29 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  void free_tg_bandwidth_server(struct task_group *tg)
  {
  	int cpu;
@@ -68,7 +68,7 @@ index 90ab955a2e02..3eb3874d0f36 100644
  		kfree(tg->tg_server[cpu]);
  		tg->tg_server[cpu] = NULL;
  	}
-@@ -9410,7 +9428,7 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -9380,7 +9398,7 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  {
  	struct dl_bandwidth *dl_bw = &tg->tg_bandwidth;
  	unsigned long flags;
@@ -77,7 +77,7 @@ index 90ab955a2e02..3eb3874d0f36 100644
  
  	if (tg == &root_task_group)
  		return -EPERM;
-@@ -9434,6 +9452,13 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -9404,6 +9422,13 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  	dl_bw->dl_runtime = runtime;
  	raw_spin_unlock_irqrestore(&dl_bw->dl_runtime_lock, flags);
  
@@ -92,7 +92,7 @@ index 90ab955a2e02..3eb3874d0f36 100644
  }
  
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 835b33138b28..3feb75e6f041 100644
+index 05878bb5861d..d79353dea85b 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -355,6 +355,102 @@ static void dl_change_utilization(struct task_struct *p, u64 new_bw)
@@ -199,7 +199,7 @@ index 835b33138b28..3feb75e6f041 100644
  
  /*
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 9c26a8e157fe..3dc8dcc42fa5 100644
+index 225827737613..a22746bbb9e7 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -577,6 +577,8 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
