@@ -2058,7 +2058,7 @@ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
 {
 	struct sched_dl_entity *server;
 
-	if (!tg || tg == &root_task_group || !tg->tg_server)
+	if (!tg_uses_bandwidth_server(tg))
 		return NULL;
 
 	server = READ_ONCE(tg->tg_server[cpu]);
