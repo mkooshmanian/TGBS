@@ -591,6 +591,26 @@ extern long sched_group_tg_period(struct task_group *tg);
 
 extern void free_tg_bandwidth_server(struct task_group *tg);
 extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
+
+static inline bool tg_uses_bandwidth_server(struct task_group *tg)
+{
+	if (!tg || !tg->tg_server)
+		return false;
+
+	return tg != &root_task_group;
+}
+
+static inline const struct cpumask *tg_active_mask(struct task_group *tg)
+{
+	return cpu_possible_mask;
+}
+
+static inline bool tg_server_cpu_active(struct task_group *tg, int cpu)
+{
+	return cpumask_test_cpu(cpu, tg_active_mask(tg));
+}
+
+static inline bool task_uses_tg_bandwidth_server(struct task_struct *p);
 #else
 static inline void free_tg_bandwidth_server(struct task_group *tg) { }
 static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
@@ -2233,13 +2253,18 @@ static inline struct task_group *task_group(struct task_struct *p)
 #endif /* !CONFIG_CGROUP_SCHED */
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+static inline bool task_uses_tg_bandwidth_server(struct task_struct *p)
+{
+	return tg_uses_bandwidth_server(task_group(p));
+}
+
 static inline struct rq *tg_server_rq_of_task(struct rq *rq,
 					      struct task_struct *p)
 {
 	struct task_group *tg = task_group(p);
 	struct rq *vrq;
 
-	if (!tg || tg == &root_task_group || !tg->tg_server)
+	if (!task_uses_tg_bandwidth_server(p))
 		return rq;
 
 	vrq = vrq_of_tg(tg, cpu_of(rq));
