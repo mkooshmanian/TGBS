@@ -255,14 +255,8 @@ void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 static inline bool
 __dl_overflow(struct dl_bw *dl_b, unsigned long cap, u64 old_bw, u64 new_bw)
 {
-	u64 tg_servers_root = 0;
-
-#ifdef CONFIG_TG_BANDWIDTH_SERVER
-	tg_servers_root = tg_root_bandwidth_sum();
-#endif
 	return dl_b->bw != -1 &&
-	       cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw
-					+ cap_scale(tg_servers_root, cap);
+	       cap_scale(dl_b->bw, cap) < dl_b->total_bw - old_bw + new_bw;
 }
 
 static inline
@@ -514,9 +508,11 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	struct rq *rq;
 	struct rq *vrq;
 	struct dl_rq *dl_rq;
+	struct dl_bw *dl_b;
 	struct sched_dl_entity *parent;
 	bool is_active_group;
 	unsigned int nr_task_running;
+	u64 old_bw;
 	u64 old_runtime;
 	unsigned long new_bw;
 
@@ -539,8 +535,21 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	update_rq_clock(rq);
 	dl_server_stop(dl_se);
 
+	old_bw = dl_se->dl_bw;
 	old_runtime = dl_se->dl_runtime;
 	new_bw = to_ratio(period, runtime);
+
+	if (old_bw != new_bw) {
+		rcu_read_lock_sched();
+		dl_b = dl_bw_of(cpu);
+		raw_spin_lock(&dl_b->lock);
+		if (old_bw)
+			__dl_sub(dl_b, old_bw, dl_bw_cpus(cpu));
+		if (new_bw)
+			__dl_add(dl_b, new_bw, dl_bw_cpus(cpu));
+		raw_spin_unlock(&dl_b->lock);
+		rcu_read_unlock_sched();
+	}
 
 	if (is_active_group)
 		dl_rq_change_utilization(rq, dl_se, new_bw);
@@ -3350,6 +3359,9 @@ void dl_add_task_root_domain(struct task_struct *p)
 void dl_clear_root_domain(struct root_domain *rd)
 {
 	int i;
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	struct task_group *tg;
+#endif
 
 	guard(raw_spinlock_irqsave)(&rd->dl_bw.lock);
 
@@ -3371,6 +3383,25 @@ void dl_clear_root_domain(struct root_domain *rd)
 		if (dl_server(dl_se) && cpu_active(i))
 			__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(i));
 	}
+
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+	rcu_read_lock_sched();
+	list_for_each_entry_rcu(tg, &task_groups, list) {
+		if (tg == &root_task_group || !tg_uses_bandwidth_server(tg))
+			continue;
+
+		for_each_cpu(i, rd->span) {
+			struct sched_dl_entity *dl_se = READ_ONCE(tg->tg_server[i]);
+
+			if (!cpu_active(i) || !dl_se || !dl_server(dl_se) ||
+			    !dl_se->dl_runtime)
+				continue;
+
+			__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(i));
+		}
+	}
+	rcu_read_unlock_sched();
+#endif
 }
 
 void dl_clear_root_domain_cpu(int cpu)
@@ -3591,14 +3622,9 @@ int sched_dl_global_validate(void)
 	u64 period = global_rt_period();
 	u64 new_bw = to_ratio(period, runtime);
 	u64 cookie = ++dl_cookie;
-	u64 tg_servers_root = 0;
 	struct dl_bw *dl_b;
-	int cpu, cap, cpus, ret = 0;
+	int cpu, cpus, ret = 0;
 	unsigned long flags;
-
-#ifdef CONFIG_TG_BANDWIDTH_SERVER
-	tg_servers_root = tg_root_bandwidth_sum();
-#endif
 
 	/*
 	 * Here we want to check the bandwidth not being set to some
@@ -3612,12 +3638,10 @@ int sched_dl_global_validate(void)
 			goto next;
 
 		dl_b = dl_bw_of(cpu);
-		cap = dl_bw_capacity(cpu);
 		cpus = dl_bw_cpus(cpu);
 
 		raw_spin_lock_irqsave(&dl_b->lock, flags);
-		if (new_bw * cpus < dl_b->total_bw +
-				cap_scale(tg_servers_root, cap))
+		if (new_bw * cpus < dl_b->total_bw)
 			ret = -EBUSY;
 		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
 
@@ -3681,6 +3705,12 @@ void sched_dl_do_global(void)
 
 		raw_spin_lock_irqsave(&dl_b->lock, flags);
 		dl_b->bw = new_bw;
+		/*
+		 * init_dl_rq_bw_ratio() resets each rq's extra_bw to max_bw.
+		 * Restore the GRUB invariant against the bandwidth already
+		 * admitted in rd->dl_bw.total_bw.
+		 */
+		__dl_update(dl_b, -((s64)dl_b->total_bw));
 		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
 
 		rcu_read_unlock_sched();

@@ -9939,6 +9939,33 @@ tg_schedulable_bw(const struct tg_bandwidth_schedulable_data *d,
 				      tg_schedulable_mask(d, tg));
 }
 
+static u64 tg_root_domain_server_bw(struct root_domain *rd)
+{
+	struct task_group *tg;
+	u64 total = 0;
+	int cpu;
+
+	RCU_LOCKDEP_WARN(!rcu_read_lock_sched_held(),
+			 "sched RCU must be held");
+
+	list_for_each_entry_rcu(tg, &task_groups, list) {
+		if (tg == &root_task_group || !tg_uses_bandwidth_server(tg))
+			continue;
+
+		for_each_cpu(cpu, rd->span) {
+			struct sched_dl_entity *server;
+
+			server = READ_ONCE(tg->tg_server[cpu]);
+			if (!cpu_active(cpu) || !server || !server->dl_runtime)
+				continue;
+
+			total += server->dl_bw;
+		}
+	}
+
+	return total;
+}
+
 static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
 {
 	unsigned long flags;
@@ -9952,6 +9979,7 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
 		struct root_domain *rd;
 		struct dl_bw *dl_b;
 		u64 total_bw = 0;
+		u64 tg_bw, non_tg_bw;
 		int cpus;
 		struct task_group *child;
 
@@ -9979,10 +10007,12 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
 						    rd->span);
 			total_bw += (u64)child_bw * active;
 		}
+		tg_bw = tg_root_domain_server_bw(rd);
 
 		raw_spin_lock_irqsave(&dl_b->lock, flags);
+		non_tg_bw = dl_b->total_bw > tg_bw ? dl_b->total_bw - tg_bw : 0;
 		if (dl_b->bw != (u64)-1 &&
-		    dl_b->bw * cpus < dl_b->total_bw + total_bw) {
+		    dl_b->bw * cpus < non_tg_bw + total_bw) {
 			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
 			rcu_read_unlock_sched();
 			return 0;
@@ -10008,38 +10038,6 @@ static bool tg_has_tasks(struct task_group *tg)
 	css_task_iter_end(&it);
 
 	return ret;
-}
-
-unsigned long tg_root_bandwidth_sum(void)
-{
-	struct tg_bandwidth_schedulable_data data = {
-		.tg = NULL,
-	};
-	struct task_group *child;
-	unsigned long sum = 0;
-	int cpu;
-
-	rcu_read_lock();
-	for_each_possible_cpu(cpu) {
-		unsigned long cpu_sum = 0;
-
-		list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
-			unsigned long child_bw = tg_schedulable_bw(&data, child, cpu);
-
-			if (cpu_sum + child_bw < cpu_sum) {
-				cpu_sum = ULONG_MAX;
-				break;
-			}
-
-			cpu_sum += child_bw;
-		}
-
-		if (sum < cpu_sum)
-			sum = cpu_sum;
-	}
-	rcu_read_unlock();
-
-	return sum;
 }
 
 static struct task_struct *
