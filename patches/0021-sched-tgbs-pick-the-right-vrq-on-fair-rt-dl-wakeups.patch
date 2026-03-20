@@ -1,7 +1,7 @@
-From 1b84823217140bd7d29d3f7397c52e2307c3eff6 Mon Sep 17 00:00:00 2001
+From c346fc2d44126fc1ebafeaeeea1813483116683d Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 11:09:28 +0100
-Subject: [PATCH 20/22] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
+Subject: [PATCH 21/25] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
 
 Add policy-specific helpers mirroring root-rq placement when we select a
 task-group server: CFS prefers the lightest vrq, RT enforces uclamp
@@ -12,25 +12,26 @@ original CPU. select_task_rq() routes TG_BANDWIDTH_SERVER tasks through
 these helpers so non-root groups land on the correct virtual rq, paving
 the way for proper multi-core support.
 ---
- kernel/sched/core.c     | 22 +++++++++++++++
+ kernel/sched/core.c     | 23 ++++++++++++++++
  kernel/sched/deadline.c | 35 ++++++++++++++++++++++++
  kernel/sched/fair.c     | 32 ++++++++++++++++++++++
  kernel/sched/rt.c       | 59 +++++++++++++++++++++++++++++++++++++++++
  kernel/sched/sched.h    | 24 +++++++++++++++++
- 5 files changed, 172 insertions(+)
+ 5 files changed, 173 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 95d53dfc931a..b4692d5482a2 100644
+index 08fbed0d9a73..73baabf97d97 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -2163,6 +2163,24 @@ unsigned long get_wchan(struct task_struct *p)
+@@ -2163,6 +2163,25 @@ unsigned long get_wchan(struct task_struct *p)
  }
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
 +static int tg_select_task_cpu(struct task_struct *p, int cpu)
 +{
 +	struct task_group *tg = task_group(p);
-+	if (!tg || tg == &root_task_group || !tg->tg_server)
++
++	if (!task_uses_tg_bandwidth_server(p))
 +		return cpu;
 +
 +	if (task_has_dl_policy(p))
@@ -48,7 +49,7 @@ index 95d53dfc931a..b4692d5482a2 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -3888,6 +3906,10 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
+@@ -3888,6 +3907,10 @@ int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
  		cpu = cpumask_any(p->cpus_ptr);
  	}
  
@@ -60,7 +61,7 @@ index 95d53dfc931a..b4692d5482a2 100644
  	 * In order not to call set_task_cpu() on a blocking task we need
  	 * to rely on ttwu() to place the task on a valid ->cpus_ptr
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 3f70c29c289b..d7933b58e5fd 100644
+index 3f70c29c289b..915a0d5e4b96 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -2733,6 +2733,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
@@ -75,7 +76,7 @@ index 3f70c29c289b..d7933b58e5fd 100644
 +	int best_cpu = cpu;
 +	int candidate;
 +
-+	for_each_cpu(candidate, p->cpus_ptr) {
++	for_each_cpu_and(candidate, p->cpus_ptr, tg_active_mask(tg)) {
 +		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
 +		struct rq *vrq;
 +		unsigned int score;
@@ -106,7 +107,7 @@ index 3f70c29c289b..d7933b58e5fd 100644
  
  static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index df2f1abf05d6..6ffdf0bc553a 100644
+index df2f1abf05d6..d4a2b36df5e6 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
 @@ -8997,6 +8997,38 @@ struct task_struct *tg_server_pick_fair_task(struct rq *rq)
@@ -121,7 +122,7 @@ index df2f1abf05d6..6ffdf0bc553a 100644
 +	bool have_best = false;
 +	int candidate;
 +
-+	for_each_cpu(candidate, p->cpus_ptr) {
++	for_each_cpu_and(candidate, p->cpus_ptr, tg_active_mask(tg)) {
 +		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
 +		struct rq *vrq;
 +		unsigned int score;
@@ -149,7 +150,7 @@ index df2f1abf05d6..6ffdf0bc553a 100644
  
  static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
-index d6bca40acf22..03144dd54343 100644
+index d6bca40acf22..70d06d92287f 100644
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
 @@ -1756,10 +1756,69 @@ static struct task_struct *pick_task_rt(struct rq *rq)
@@ -192,7 +193,7 @@ index d6bca40acf22..03144dd54343 100644
 +	bool have_best = false;
 +	int candidate;
 +
-+	for_each_cpu(candidate, p->cpus_ptr) {
++	for_each_cpu_and(candidate, p->cpus_ptr, tg_active_mask(tg)) {
 +		struct sched_dl_entity *server = READ_ONCE(tg->tg_server[candidate]);
 +		struct rq *vrq;
 +		unsigned int score;
@@ -223,7 +224,7 @@ index d6bca40acf22..03144dd54343 100644
  
  static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 5cc0d16f3942..4a24eb56eb4d 100644
+index 50e85eb7bbbf..5d312c4f8598 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -551,6 +551,30 @@ struct task_group {

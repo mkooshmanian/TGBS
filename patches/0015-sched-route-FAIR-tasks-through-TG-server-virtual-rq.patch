@@ -1,7 +1,7 @@
-From c727d2a41e47c9799fdc90920cdde92fc8044b98 Mon Sep 17 00:00:00 2001
+From 58b8a072e5ae97696b8a406202f1b3755f4d8273 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:48:44 +0100
-Subject: [PATCH 14/22] sched: route FAIR tasks through TG server virtual rq
+Subject: [PATCH 15/25] sched: route FAIR tasks through TG server virtual rq
 
 Attach FAIR tasks to the server virtual runqueue to reuse the FAIR
 picker. Cache the sched_entity cfs_rq, expose task_of() and related
@@ -36,7 +36,7 @@ index 69d709aae15e..284fc0eb0570 100644
  	struct cfs_rq			*my_q;
  	/* cached value of my_q->h_nr_running */
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 16f7ec0b7630..fd07f7bc8356 100644
+index 76adbd3cde28..26ff623639ce 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9044,6 +9044,7 @@ void __init sched_init(void)
@@ -129,7 +129,7 @@ index 24467b78fbb1..df2f1abf05d6 100644
  	if (!first)
  		return;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index f9b2000cf332..285143994ee3 100644
+index 4e7171013d6c..15aa424e69b6 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -428,6 +428,7 @@ u64 sync_vrq_clock(struct rq *vrq, struct rq *phys);
@@ -140,7 +140,7 @@ index f9b2000cf332..285143994ee3 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -754,6 +755,10 @@ struct cfs_rq {
+@@ -774,6 +775,10 @@ struct cfs_rq {
  		unsigned long	runnable_avg;
  	} removed;
  
@@ -151,7 +151,7 @@ index f9b2000cf332..285143994ee3 100644
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	u64			last_update_tg_load_avg;
  	unsigned long		tg_load_avg_contrib;
-@@ -772,8 +777,6 @@ struct cfs_rq {
+@@ -792,8 +797,6 @@ struct cfs_rq {
  #endif /* CONFIG_FAIR_GROUP_SCHED */
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -160,7 +160,7 @@ index f9b2000cf332..285143994ee3 100644
  	/*
  	 * leaf cfs_rqs are those that hold tasks (lowest schedulable entity in
  	 * a hierarchy). Non-leaf lrqs hold other higher schedulable entities
-@@ -1362,21 +1365,21 @@ struct rq {
+@@ -1382,21 +1385,21 @@ struct rq {
  #endif
  };
  
@@ -186,7 +186,7 @@ index f9b2000cf332..285143994ee3 100644
  
  static inline int cpu_of(struct rq *rq)
  {
-@@ -1635,7 +1638,7 @@ static inline void update_idle_core(struct rq *rq)
+@@ -1655,7 +1658,7 @@ static inline void update_idle_core(struct rq *rq)
  static inline void update_idle_core(struct rq *rq) { }
  #endif /* !CONFIG_SCHED_SMT */
  
@@ -195,7 +195,7 @@ index f9b2000cf332..285143994ee3 100644
  
  static inline struct task_struct *task_of(struct sched_entity *se)
  {
-@@ -1660,7 +1663,30 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
+@@ -1680,7 +1683,30 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
  	return grp->my_q;
  }
  
@@ -227,7 +227,7 @@ index f9b2000cf332..285143994ee3 100644
  
  #define task_of(_se)		container_of(_se, struct task_struct, se)
  
-@@ -1683,7 +1709,7 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
+@@ -1703,7 +1729,7 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
  	return NULL;
  }
  
@@ -236,7 +236,7 @@ index f9b2000cf332..285143994ee3 100644
  
  extern void update_rq_clock(struct rq *rq);
  
-@@ -2204,10 +2230,17 @@ static inline struct task_group *task_group(struct task_struct *p)
+@@ -2224,10 +2250,17 @@ static inline struct task_group *task_group(struct task_struct *p)
  /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
  static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  {
@@ -255,7 +255,7 @@ index f9b2000cf332..285143994ee3 100644
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]);
  	p->se.cfs_rq = tg->cfs_rq[cpu];
-@@ -2226,6 +2259,7 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+@@ -2246,6 +2279,7 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  	p->rt.rt_rq  = tg->rt_rq[cpu];
  	p->rt.parent = tg->rt_se[cpu];
  #endif /* CONFIG_RT_GROUP_SCHED */

@@ -1,7 +1,7 @@
-From 336ffc554a70998becbab88ebee247998e0df992 Mon Sep 17 00:00:00 2001
+From 9b6ec1c5f72a377f1b89da82e736066be2d90036 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 26 Nov 2025 10:10:43 +0100
-Subject: [PATCH 19/22] sched: add TG bandwidth server tracepoints
+Subject: [PATCH 20/25] sched: add TG bandwidth server tracepoints
 
 Add tracepoints for TG bandwidth server start/stop, throttle/unthrottle, runtime
 accounting, and pick decisions to ease debugging with cgroup context.
@@ -192,7 +192,7 @@ index 7b2645b50e78..1168899e088c 100644
   * Following tracepoints are not exported in tracefs and provide hooking
   * mechanisms only for testing and debugging purposes.
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 849c8f805040..95d53dfc931a 100644
+index 1e3f0cec65fa..08fbed0d9a73 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2186,8 +2186,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
@@ -337,7 +337,7 @@ index 1f4acbb06335..3f70c29c289b 100644
  		if (dl_runtime_exceeded(dl_se) &&
  		    (dl_se->flags & SCHED_FLAG_DL_OVERRUN))
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index c84d1fb5d403..5cc0d16f3942 100644
+index 6d27cb8cad35..50e85eb7bbbf 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -431,6 +431,8 @@ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64

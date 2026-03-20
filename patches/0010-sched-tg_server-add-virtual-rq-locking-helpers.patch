@@ -1,7 +1,7 @@
-From 6564c7d5c01201c4fe8c7850a9f5d6b5cddff1fb Mon Sep 17 00:00:00 2001
+From 39e2699c9249e45dec263672ae861f96fa8acea4 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 10:09:37 +0100
-Subject: [PATCH 09/22] sched/tg_server: add virtual rq locking helpers
+Subject: [PATCH 10/25] sched/tg_server: add virtual rq locking helpers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -18,7 +18,7 @@ servers; it just aligns vrq locking with real rq locking.
  2 files changed, 18 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 5c151e635712..a69395c3cd94 100644
+index ab51a6eb06ed..10bf356a1893 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2054,6 +2054,8 @@ static inline void init_uclamp(void) { }
@@ -51,7 +51,7 @@ index 5c151e635712..a69395c3cd94 100644
  
  bool sched_task_on_rq(struct task_struct *p)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 45e4b229bbfd..661a69c49ba5 100644
+index 72e643505957..8486b75e264a 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -82,6 +82,7 @@ struct rt_rq;

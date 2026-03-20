@@ -1,7 +1,7 @@
-From 7a72dc6e4e447895edd9439a2a0b9ef6f36b5552 Mon Sep 17 00:00:00 2001
+From cba064dee439459e30c039773aa13d772c6e6e56 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:56:21 +0100
-Subject: [PATCH 06/22] sched/core: derive root tg server bandwidth from
+Subject: [PATCH 06/25] sched/core: derive root tg server bandwidth from
  children
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ remains purely implicit.
  3 files changed, 57 insertions(+), 9 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index bbd457e104bd..5f3ce89b1d03 100644
+index 882d3a3cb0c8..e1f8bc7f7c02 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9172,6 +9172,29 @@ static bool tg_has_tasks(struct task_group *tg, bool active_only)

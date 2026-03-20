@@ -1,7 +1,7 @@
-From b75c2ea79bd925754b806afc20807945f1f7fe69 Mon Sep 17 00:00:00 2001
+From 7d387e9900a8ca66809b6db31df5bb4695752616 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:07:02 +0100
-Subject: [PATCH 11/22] sched/core: propagate the tick to TG virtual runqueues
+Subject: [PATCH 12/25] sched/core: propagate the tick to TG virtual runqueues
 
 Tasks under a TG bandwidth server run on a virtual rq, but the tick only hit
 the physical rq, breaking vruntime/slice accounting. Forward both the regular
@@ -13,7 +13,7 @@ changing the existing paths otherwise.
  1 file changed, 101 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 06700a11e762..ef2cd7c27351 100644
+index 27998e236eeb..06843c90a67b 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -872,12 +872,40 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)

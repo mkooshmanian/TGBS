@@ -1,7 +1,7 @@
-From 1f90efaa48f3ea2738269585ab2a06dcee4e2265 Mon Sep 17 00:00:00 2001
+From f0da1892211b27a163000f475c3e02900bac0a88 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 11:19:35 +0100
-Subject: [PATCH 08/22] sched/deadline: Introduce TG server virtual runqueue
+Subject: [PATCH 08/25] sched/deadline: Introduce TG server virtual runqueue
 
 Introduce a per-server virtual rq for CONFIG_TG_BANDWIDTH_SERVER and keep it
 within the sched_dl_entity. The virtual rq mirrors the CPU rq clock state so
@@ -34,7 +34,7 @@ index 1b554219088d..69d709aae15e 100644
  	struct task_group		*tg;
  #endif
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 57762fc76051..5c151e635712 100644
+index 9b694085d449..18d32bdaa310 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2053,6 +2053,22 @@ static inline void uclamp_post_fork(struct task_struct *p) { }

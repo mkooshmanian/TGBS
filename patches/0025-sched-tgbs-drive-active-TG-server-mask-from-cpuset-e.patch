@@ -1,0 +1,438 @@
+From d5747f16dc05fa20b54a3e35694d563ce6486f61 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Fri, 20 Mar 2026 08:46:39 +0100
+Subject: [PATCH 25/25] sched/tgbs: drive active TG server mask from cpuset
+ effective CPUs
+
+Use cpuset effective CPUs to derive the active TG bandwidth server mask of each task group and refresh it when the cgroup mask changes.
+
+Make TG bandwidth admission checks mask-aware so disjoint cpuset configurations only account bandwidth on CPUs where the group is active.
+---
+ include/linux/cpuset.h  |   9 ++
+ include/linux/sched.h   |   8 ++
+ kernel/cgroup/cpuset.c  |  18 ++++
+ kernel/sched/core.c     | 179 +++++++++++++++++++++++++++++-----------
+ kernel/sched/deadline.c |   6 +-
+ kernel/sched/fair.c     |   6 +-
+ kernel/sched/rt.c       |   6 +-
+ 7 files changed, 180 insertions(+), 52 deletions(-)
+
+diff --git a/include/linux/cpuset.h b/include/linux/cpuset.h
+index 2ddb256187b5..806f3ee65d3e 100644
+--- a/include/linux/cpuset.h
++++ b/include/linux/cpuset.h
+@@ -75,6 +75,8 @@ extern void dec_dl_tasks_cs(struct task_struct *task);
+ extern void cpuset_lock(void);
+ extern void cpuset_unlock(void);
+ extern void cpuset_cpus_allowed(struct task_struct *p, struct cpumask *mask);
++extern int cpuset_cgroup_effective_cpus(struct cgroup *cgrp,
++					struct cpumask *mask);
+ extern bool cpuset_cpus_allowed_fallback(struct task_struct *p);
+ extern bool cpuset_cpu_is_isolated(int cpu);
+ extern nodemask_t cpuset_mems_allowed(struct task_struct *p);
+@@ -201,6 +203,13 @@ static inline void cpuset_cpus_allowed(struct task_struct *p,
+ 	cpumask_copy(mask, task_cpu_possible_mask(p));
+ }
+ 
++static inline int cpuset_cgroup_effective_cpus(struct cgroup *cgrp,
++					       struct cpumask *mask)
++{
++	cpumask_copy(mask, cpu_possible_mask);
++	return 0;
++}
++
+ static inline bool cpuset_cpus_allowed_fallback(struct task_struct *p)
+ {
+ 	return false;
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index ac2874f3dba1..72e9bee876d6 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1881,6 +1881,14 @@ extern int cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpu
+ extern int task_can_attach(struct task_struct *p);
+ extern int dl_bw_alloc(int cpu, u64 dl_bw);
+ extern void dl_bw_free(int cpu, u64 dl_bw);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++struct cgroup;
++extern void sched_tg_cpuset_cpumask_changed(struct cgroup *cgrp,
++					    const struct cpumask *mask);
++#else
++static inline void sched_tg_cpuset_cpumask_changed(struct cgroup *cgrp,
++						   const struct cpumask *mask) { }
++#endif
+ 
+ /* do_set_cpus_allowed() - consider using set_cpus_allowed_ptr() instead */
+ extern void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask);
+diff --git a/kernel/cgroup/cpuset.c b/kernel/cgroup/cpuset.c
+index 52468d2c178a..dd3d4de6932f 100644
+--- a/kernel/cgroup/cpuset.c
++++ b/kernel/cgroup/cpuset.c
+@@ -1197,6 +1197,22 @@ void cpuset_update_tasks_cpumask(struct cpuset *cs, struct cpumask *new_cpus)
+ 	css_task_iter_end(&it);
+ }
+ 
++int cpuset_cgroup_effective_cpus(struct cgroup *cgrp, struct cpumask *mask)
++{
++	struct cgroup_subsys_state *css;
++	struct cpuset *cs;
++
++	css = cgroup_get_e_css(cgrp, &cpuset_cgrp_subsys);
++	if (!css)
++		return -ENOENT;
++
++	cs = css_cs(css);
++	cpumask_copy(mask, cs->effective_cpus);
++	css_put(css);
++
++	return 0;
++}
++
+ /**
+  * compute_effective_cpumask - Compute the effective cpumask of the cpuset
+  * @new_cpus: the temp variable for the new effective_cpus mask
+@@ -2275,6 +2291,8 @@ static void update_cpumasks_hier(struct cpuset *cs, struct tmpmasks *tmp,
+ 		WARN_ON(!is_in_v2_mode() &&
+ 			!cpumask_equal(cp->cpus_allowed, cp->effective_cpus));
+ 
++		sched_tg_cpuset_cpumask_changed(cp->css.cgroup,
++						cp->effective_cpus);
+ 		cpuset_update_tasks_cpumask(cp, cp->effective_cpus);
+ 
+ 		/*
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 630b95ff9bfc..9373309ed404 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -9876,6 +9876,13 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+ static u64 tg_bandwidth_visit_cookie;
+ 
++struct tg_bandwidth_schedulable_data {
++	struct task_group *tg;
++	u64 period;
++	u64 runtime;
++	const struct cpumask *mask;
++};
++
+ static bool tg_dl_bw_visited(struct root_domain *rd, u64 gen)
+ {
+ 	if (READ_ONCE(rd->visit_cookie) == gen)
+@@ -9893,7 +9900,46 @@ static int tg_dl_bw_cpus(struct root_domain *rd)
+ 	return cpumask_weight_and(rd->span, cpu_active_mask);
+ }
+ 
+-static int tg_check_root_dl_bandwidth(unsigned long total_bw)
++static unsigned long tg_effective_bw_on_cpu(struct task_group *tg, int cpu,
++					    u64 period, u64 runtime,
++					    const struct cpumask *mask)
++{
++	if (!runtime)
++		return 0;
++
++	if (!cpumask_test_cpu(cpu, mask ?: tg_active_mask(tg)))
++		return 0;
++
++	return to_ratio(period, runtime);
++}
++
++static const struct cpumask *
++tg_schedulable_mask(const struct tg_bandwidth_schedulable_data *d,
++		    struct task_group *tg)
++{
++	if (tg == d->tg && d->mask)
++		return d->mask;
++
++	return tg_active_mask(tg);
++}
++
++static unsigned long
++tg_schedulable_bw(const struct tg_bandwidth_schedulable_data *d,
++		  struct task_group *tg, int cpu)
++{
++	u64 period = READ_ONCE(tg->tg_bandwidth.dl_period);
++	u64 runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
++
++	if (tg == d->tg) {
++		period = d->period;
++		runtime = d->runtime;
++	}
++
++	return tg_effective_bw_on_cpu(tg, cpu, period, runtime,
++				      tg_schedulable_mask(d, tg));
++}
++
++static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
+ {
+ 	unsigned long flags;
+ 	int cpu;
+@@ -9905,7 +9951,9 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+ 		struct rq *rq;
+ 		struct root_domain *rd;
+ 		struct dl_bw *dl_b;
++		u64 total_bw = 0;
+ 		int cpus;
++		struct task_group *child;
+ 
+ 		rcu_read_lock_sched();
+ 
+@@ -9918,10 +9966,23 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+ 
+ 		dl_b = &rd->dl_bw;
+ 		cpus = tg_dl_bw_cpus(rd);
++		list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
++			unsigned long child_bw;
++			int active;
++
++			child_bw = to_ratio(READ_ONCE(child->tg_bandwidth.dl_period),
++					    READ_ONCE(child->tg_bandwidth.dl_runtime));
++			if (child == d->tg)
++				child_bw = to_ratio(d->period, d->runtime);
++
++			active = cpumask_weight_and(tg_schedulable_mask(d, child),
++						    rd->span);
++			total_bw += (u64)child_bw * active;
++		}
+ 
+ 		raw_spin_lock_irqsave(&dl_b->lock, flags);
+ 		if (dl_b->bw != (u64)-1 &&
+-		    dl_b->bw * cpus < dl_b->total_bw + (u64)total_bw * cpus) {
++		    dl_b->bw * cpus < dl_b->total_bw + total_bw) {
+ 			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+ 			rcu_read_unlock_sched();
+ 			return 0;
+@@ -9951,21 +10012,30 @@ static bool tg_has_tasks(struct task_group *tg)
+ 
+ unsigned long tg_root_bandwidth_sum(void)
+ {
++	struct tg_bandwidth_schedulable_data data = {
++		.tg = NULL,
++	};
+ 	struct task_group *child;
+ 	unsigned long sum = 0;
++	int cpu;
+ 
+ 	rcu_read_lock();
+-	list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
+-		u64 period = READ_ONCE(child->tg_bandwidth.dl_period);
+-		u64 runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
+-		unsigned long child_bw = to_ratio(period, runtime);
++	for_each_possible_cpu(cpu) {
++		unsigned long cpu_sum = 0;
+ 
+-		if (sum + child_bw < sum) {
+-			sum = ULONG_MAX;
+-			break;
++		list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
++			unsigned long child_bw = tg_schedulable_bw(&data, child, cpu);
++
++			if (cpu_sum + child_bw < cpu_sum) {
++				cpu_sum = ULONG_MAX;
++				break;
++			}
++
++			cpu_sum += child_bw;
+ 		}
+ 
+-		sum += child_bw;
++		if (sum < cpu_sum)
++			sum = cpu_sum;
+ 	}
+ 	rcu_read_unlock();
+ 
+@@ -10280,40 +10350,31 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+ 	return 0;
+ }
+ 
+-struct tg_bandwidth_schedulable_data {
+-	struct task_group *tg;
+-	u64 period;
+-	u64 runtime;
+-};
+-
+ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+ {
+ 	struct tg_bandwidth_schedulable_data *d = data;
+ 	struct task_group *child;
+-	unsigned long total, sum = 0;
++	unsigned long total;
+ 	u64 period, runtime, cur_runtime;
++	int cpu;
+ 
+ 	if (tg == &root_task_group) {
+-		list_for_each_entry_rcu(child, &tg->children, siblings) {
+-			u64 child_period = READ_ONCE(child->tg_bandwidth.dl_period);
+-			u64 child_runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
+-			unsigned long child_bw;
++		for_each_possible_cpu(cpu) {
++			unsigned long sum = 0;
+ 
+-			if (child == d->tg) {
+-				child_period = d->period;
+-				child_runtime = d->runtime;
+-			}
++			list_for_each_entry_rcu(child, &tg->children, siblings) {
++				unsigned long child_bw = tg_schedulable_bw(d, child, cpu);
+ 
+-			child_bw = to_ratio(child_period, child_runtime);
+-			if (sum + child_bw < sum)
+-				return -EINVAL;
++				if (sum + child_bw < sum)
++					return -EINVAL;
+ 
+-			sum += child_bw;
+-			if (sum > BW_UNIT)
+-				return -EINVAL;
++				sum += child_bw;
++				if (sum > BW_UNIT)
++					return -EINVAL;
++			}
+ 		}
+ 
+-		if (!tg_check_root_dl_bandwidth(sum))
++		if (!tg_check_root_dl_bandwidth(d))
+ 			return -EBUSY;
+ 
+ 		return 0;
+@@ -10335,27 +10396,24 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+ 	    tg_has_tasks(tg))
+ 		return -EBUSY;
+ 
+-	total = to_ratio(period, runtime);
+-	if (total > BW_UNIT)
+-		return -EINVAL;
++	for_each_possible_cpu(cpu) {
++		unsigned long sum = 0;
+ 
+-	list_for_each_entry_rcu(child, &tg->children, siblings) {
+-		u64 child_period = READ_ONCE(child->tg_bandwidth.dl_period);
+-		u64 child_runtime = READ_ONCE(child->tg_bandwidth.dl_runtime);
+-		unsigned long child_bw;
++		total = tg_effective_bw_on_cpu(tg, cpu, period, runtime,
++					       tg_schedulable_mask(d, tg));
++		if (total > BW_UNIT)
++			return -EINVAL;
+ 
+-		if (child == d->tg) {
+-			child_period = d->period;
+-			child_runtime = d->runtime;
+-		}
++		list_for_each_entry_rcu(child, &tg->children, siblings) {
++			unsigned long child_bw = tg_schedulable_bw(d, child, cpu);
+ 
+-		child_bw = to_ratio(child_period, child_runtime);
+-		if (sum + child_bw < sum)
+-			return -EINVAL;
++			if (sum + child_bw < sum)
++				return -EINVAL;
+ 
+-		sum += child_bw;
+-		if (sum > total)
+-			return -EINVAL;
++			sum += child_bw;
++			if (sum > total)
++				return -EINVAL;
++		}
+ 	}
+ 
+ 	return 0;
+@@ -10367,6 +10425,7 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
+ 		.tg = tg,
+ 		.period = period,
+ 		.runtime = runtime,
++		.mask = tg_active_mask(tg),
+ 	};
+ 
+ 	guard(rcu)();
+@@ -10656,6 +10715,7 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+ {
+ 	struct task_group *tg = css_tg(css);
+ 	struct task_group *parent = css_tg(css->parent);
++	cpumask_var_t cpus;
+ 	int ret;
+ 
+ 	ret = scx_tg_online(tg);
+@@ -10672,9 +10732,30 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+ 	cpu_util_update_eff(css);
+ #endif
+ 
++	if (tg_uses_bandwidth_server(tg) &&
++	    zalloc_cpumask_var(&cpus, GFP_KERNEL)) {
++		if (!cpuset_cgroup_effective_cpus(css->cgroup, cpus))
++			tg_group_set_active_mask(tg, cpus);
++		free_cpumask_var(cpus);
++	}
++
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++void sched_tg_cpuset_cpumask_changed(struct cgroup *cgrp,
++				     const struct cpumask *mask)
++{
++	struct task_group *tg;
++
++	tg = css_tg(cgrp->subsys[cpu_cgrp_id]);
++	if (!tg_uses_bandwidth_server(tg))
++		return;
++
++	tg_group_set_active_mask(tg, mask);
++}
++#endif
++
+ static void cpu_cgroup_css_offline(struct cgroup_subsys_state *css)
+ {
+ 	struct task_group *tg = css_tg(css);
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 0609599c563c..c0d40c13b401 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -2766,7 +2766,11 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
+ 		}
+ 	}
+ 
+-	return have_best ? best_cpu : cpu;
++	if (have_best)
++		return best_cpu;
++
++	candidate = cpumask_any_and(p->cpus_ptr, tg_active_mask(tg));
++	return candidate < nr_cpu_ids ? candidate : cpu;
+ }
+ 
+ struct task_struct *tg_server_pull_dl_task_from_cpu(struct rq *rq, int dst_cpu)
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 568479ed553c..b89ab0269c31 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -9027,7 +9027,11 @@ int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int
+ 		}
+ 	}
+ 
+-	return have_best ? best_cpu : cpu;
++	if (have_best)
++		return best_cpu;
++
++	candidate = cpumask_any_and(p->cpus_ptr, tg_active_mask(tg));
++	return candidate < nr_cpu_ids ? candidate : cpu;
+ }
+ 
+ struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu)
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index f1fccea8db30..01aba4042de5 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -1817,7 +1817,11 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
+ 		}
+ 	}
+ 
+-	return have_best ? best_cpu : cpu;
++	if (have_best)
++		return best_cpu;
++
++	candidate = cpumask_any_and(p->cpus_ptr, tg_active_mask(tg));
++	return candidate < nr_cpu_ids ? candidate : cpu;
+ }
+ 
+ struct task_struct *tg_server_pull_rt_task_from_cpu(struct rq *rq, int dst_cpu)
+-- 
+2.43.0
+
