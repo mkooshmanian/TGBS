@@ -1,7 +1,7 @@
 From c346fc2d44126fc1ebafeaeeea1813483116683d Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 11:09:28 +0100
-Subject: [PATCH 21/25] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
+Subject: [PATCH 21/27] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
 
 Add policy-specific helpers mirroring root-rq placement when we select a
 task-group server: CFS prefers the lightest vrq, RT enforces uclamp

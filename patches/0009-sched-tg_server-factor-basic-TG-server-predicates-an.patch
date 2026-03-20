@@ -1,7 +1,7 @@
 From c4767842f0033f3913d0595e1e70c3f2829efb35 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 19 Mar 2026 11:23:37 +0100
-Subject: [PATCH 09/25] sched/tg_server: factor basic TG server predicates and
+Subject: [PATCH 09/27] sched/tg_server: factor basic TG server predicates and
  cpu helpers
 
 Introduce shared helpers for checking whether a task or task_group uses a TG

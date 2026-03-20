@@ -1,7 +1,7 @@
 From 58b8a072e5ae97696b8a406202f1b3755f4d8273 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:48:44 +0100
-Subject: [PATCH 15/25] sched: route FAIR tasks through TG server virtual rq
+Subject: [PATCH 15/27] sched: route FAIR tasks through TG server virtual rq
 
 Attach FAIR tasks to the server virtual runqueue to reuse the FAIR
 picker. Cache the sched_entity cfs_rq, expose task_of() and related

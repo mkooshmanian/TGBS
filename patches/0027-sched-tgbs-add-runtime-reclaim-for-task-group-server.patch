@@ -1,0 +1,171 @@
+From cd19d0145684b4a03b0d3118f931169d5dd7b769 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Fri, 20 Mar 2026 08:50:29 +0100
+Subject: [PATCH 27/27] sched/tgbs: add runtime reclaim for task-group servers
+
+Add a cpu.reclaim cgroup knob for TG bandwidth servers and wire it to SCHED_FLAG_RECLAIM
+so task-group servers can reclaim spare bandwidth through the existing DL/GRUB logic on
+the physical rq.
+
+This keeps reclaim local to each CPU and shared with all SCHED_DEADLINE entities running
+on that rq.
+---
+ kernel/sched/core.c     | 65 +++++++++++++++++++++++++++++++++++++++++
+ kernel/sched/deadline.c |  6 +++-
+ kernel/sched/sched.h    |  5 ++++
+ 3 files changed, 75 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index ae6886f2c168..41de9eedcb73 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -10109,6 +10109,12 @@ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
+ 	raw_spin_lock_init(&dl_bw->dl_runtime_lock);
+ 	dl_bw->dl_period = period;
+ 	dl_bw->dl_runtime = runtime;
++	dl_bw->dl_reclaim = 0;
++}
++
++static inline unsigned int tg_server_sched_flags(struct task_group *tg)
++{
++	return READ_ONCE(tg->tg_bandwidth.dl_reclaim) ? SCHED_FLAG_RECLAIM : 0;
+ }
+ 
+ static struct rq *alloc_virtual_rq(struct task_group *tg, int cpu,
+@@ -10232,6 +10238,7 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+ 		server->dl_deadline = server->dl_period;
+ 		server->dl_bw = to_ratio(server->dl_period, server->dl_runtime);
+ 		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
++		server->flags = tg_server_sched_flags(tg);
+ 		server->dl_server = 1;
+ 
+ 		dl_server_init(server, parent_rq, tg_bandwidth_server_pick_task);
+@@ -10470,6 +10477,43 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+ 	return ret;
+ }
+ 
++int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim)
++{
++	unsigned int sched_flags = reclaim ? SCHED_FLAG_RECLAIM : 0;
++	int cpu;
++
++	if (tg == &root_task_group)
++		return -EPERM;
++
++	guard(mutex)(&tg_bandwidth_constraints_mutex);
++	WRITE_ONCE(tg->tg_bandwidth.dl_reclaim, reclaim);
++
++	for_each_possible_cpu(cpu) {
++		struct sched_dl_entity *server = tg->tg_server[cpu];
++		struct rq *rq;
++		unsigned long flags;
++
++		if (!server)
++			continue;
++
++		rq = server->rq;
++		if (!rq)
++			continue;
++
++		raw_spin_rq_lock_irqsave(rq, flags);
++		server->flags &= ~SCHED_FLAG_RECLAIM;
++		server->flags |= sched_flags;
++		raw_spin_rq_unlock_irqrestore(rq, flags);
++	}
++
++	return 0;
++}
++
++long sched_group_tg_reclaim(struct task_group *tg)
++{
++	return READ_ONCE(tg->tg_bandwidth.dl_reclaim);
++}
++
+ int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us)
+ {
+ 	u64 period, runtime;
+@@ -10834,6 +10878,21 @@ static u64 cpu_tg_period_read_uint(struct cgroup_subsys_state *css,
+ {
+ 	return sched_group_tg_period(css_tg(css));
+ }
++
++static int cpu_tg_reclaim_write(struct cgroup_subsys_state *css,
++				struct cftype *cft, s64 val)
++{
++	if (val != 0 && val != 1)
++		return -EINVAL;
++
++	return sched_group_set_tg_reclaim(css_tg(css), val);
++}
++
++static s64 cpu_tg_reclaim_read(struct cgroup_subsys_state *css,
++			       struct cftype *cft)
++{
++	return sched_group_tg_reclaim(css_tg(css));
++}
+ #endif /* CONFIG_TG_BANDWIDTH_SERVER */
+ 
+ #ifdef CONFIG_UCLAMP_TASK_GROUP
+@@ -11748,6 +11807,12 @@ static struct cftype cpu_files[] = {
+ 		.read_u64 = cpu_tg_period_read_uint,
+ 		.write_u64 = cpu_tg_period_write_uint,
+ 	},
++	{
++		.name = "reclaim",
++		.flags = CFTYPE_NOT_ON_ROOT,
++		.read_s64 = cpu_tg_reclaim_read,
++		.write_s64 = cpu_tg_reclaim_write,
++	},
+ #endif
+ #ifdef CONFIG_GROUP_SCHED_WEIGHT
+ 	{
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 5bdb2ce7b8c3..01eb90533904 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -1715,7 +1715,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64
+ 		return;
+ 
+ 	scaled_delta_exec = delta_exec;
+-	if (!dl_server(dl_se))
++	/*
++	 * Allow reclaim-enabled TG bandwidth servers to consume runtime
++	 * according to GRUB against the physical DL runqueue they share.
++	 */
++	if (!dl_server(dl_se) || (dl_se->flags & SCHED_FLAG_RECLAIM))
+ 		scaled_delta_exec = dl_scaled_delta_exec(rq, dl_se, delta_exec);
+ 
+ 	dl_se->runtime -= scaled_delta_exec;
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 08bed819abb3..d5a536893e3c 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -316,6 +316,7 @@ struct dl_bandwidth {
+ 	raw_spinlock_t          dl_runtime_lock;
+ 	u64                     dl_runtime;
+ 	u64                     dl_period;
++	u8                      dl_reclaim;
+ };
+ 
+ struct rt_bandwidth {
+@@ -629,6 +630,8 @@ extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
+ extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
+ extern long sched_group_tg_runtime(struct task_group *tg);
+ extern long sched_group_tg_period(struct task_group *tg);
++extern int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim);
++extern long sched_group_tg_reclaim(struct task_group *tg);
+ 
+ extern void free_tg_bandwidth_server(struct task_group *tg);
+ extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
+@@ -662,6 +665,8 @@ static inline void free_tg_bandwidth_server(struct task_group *tg) { }
+ static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
+ static inline int tg_group_set_active_mask(struct task_group *tg,
+ 					   const struct cpumask *mask) { return 0; }
++static inline int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim) { return -EOPNOTSUPP; }
++static inline long sched_group_tg_reclaim(struct task_group *tg) { return 0; }
+ #endif
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+-- 
+2.43.0
+

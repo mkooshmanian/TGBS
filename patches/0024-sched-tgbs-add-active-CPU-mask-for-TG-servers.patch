@@ -1,7 +1,7 @@
 From d9e4b84f77fff5bb4d44e1d6181f764537c2ef39 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:40:15 +0100
-Subject: [PATCH 24/25] sched/tgbs: add active CPU mask for TG servers
+Subject: [PATCH 24/27] sched/tgbs: add active CPU mask for TG servers
 
 Track a per-task-group mask of CPUs where TG bandwidth servers are active.
 

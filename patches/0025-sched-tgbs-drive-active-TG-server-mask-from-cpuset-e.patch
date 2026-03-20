@@ -1,7 +1,7 @@
 From d5747f16dc05fa20b54a3e35694d563ce6486f61 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:46:39 +0100
-Subject: [PATCH 25/25] sched/tgbs: drive active TG server mask from cpuset
+Subject: [PATCH 25/27] sched/tgbs: drive active TG server mask from cpuset
  effective CPUs
 
 Use cpuset effective CPUs to derive the active TG bandwidth server mask of each task group and refresh it when the cgroup mask changes.

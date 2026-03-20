@@ -1,7 +1,7 @@
 From 4b2a0511d08bb239a68e8bc0ac3c6c0f6f7c196f Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:25:54 +0100
-Subject: [PATCH 19/25] schd/tgbs: lock virtual rq for class change callbacks
+Subject: [PATCH 19/27] schd/tgbs: lock virtual rq for class change callbacks
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
