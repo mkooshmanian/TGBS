@@ -316,6 +316,7 @@ struct dl_bandwidth {
 	raw_spinlock_t          dl_runtime_lock;
 	u64                     dl_runtime;
 	u64                     dl_period;
+	u8                      dl_reclaim;
 };
 
 struct rt_bandwidth {
@@ -629,6 +630,8 @@ extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
 extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
 extern long sched_group_tg_runtime(struct task_group *tg);
 extern long sched_group_tg_period(struct task_group *tg);
+extern int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim);
+extern long sched_group_tg_reclaim(struct task_group *tg);
 
 extern void free_tg_bandwidth_server(struct task_group *tg);
 extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
@@ -662,6 +665,8 @@ static inline void free_tg_bandwidth_server(struct task_group *tg) { }
 static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
 static inline int tg_group_set_active_mask(struct task_group *tg,
 					   const struct cpumask *mask) { return 0; }
+static inline int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim) { return -EOPNOTSUPP; }
+static inline long sched_group_tg_reclaim(struct task_group *tg) { return 0; }
 #endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
