@@ -1,7 +1,7 @@
 From e94142080f80919918164b1ab9046d19b22ff1ca Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 16:50:53 +0100
-Subject: [PATCH 17/25] sched/dl: route DL tasks through TG server virtual rq
+Subject: [PATCH 17/27] sched/dl: route DL tasks through TG server virtual rq
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

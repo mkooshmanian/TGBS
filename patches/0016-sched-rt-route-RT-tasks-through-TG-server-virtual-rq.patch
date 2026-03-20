@@ -1,7 +1,7 @@
 From e2795a6588a3c0ab6bcaaf8e00c33ead0fd943a6 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:55:56 +0100
-Subject: [PATCH 16/25] sched/rt: route RT tasks through TG server virtual rq
+Subject: [PATCH 16/27] sched/rt: route RT tasks through TG server virtual rq
 
 Attach RT sched_entities to the server virtual runqueue so bandwidth servers
 can reuse the RT picker. Cache the rt_rq pointer in sched_rt_entity, provide

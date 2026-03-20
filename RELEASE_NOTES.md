@@ -1,20 +1,21 @@
-# TGBS v1.2 release notes
+# TGBS v1.3 release notes
 
-TGBS v1.2 adds CPU placement and affinity for container and cgroup workloads
-through cpusets. On multicore systems, TGBS provides one bandwidth server per
-CPU for each CPU cgroup; the cgroup's effective cpuset now determines which of
-those servers are active. A singleton cpuset therefore makes it possible to
-use partitioned multicore scheduling, with the workload and its server confined
-to a single CPU.
+TGBS v1.3 adds optional runtime reclaim for container and cgroup bandwidth
+servers. A group can now use spare CPU bandwidth while it is available instead
+of being strictly limited to its reserved runtime, without weakening the
+bandwidth guaranteed to other admitted SCHED_DEADLINE entities. Reclaim uses
+the existing GRUB mechanism and remains local to each CPU.
 
-## What changed in v1.2
+## What changed in v1.3
 
-- Active TGBS servers are now derived from each task group's effective
-  cpuset and updated dynamically when that cpuset changes.
-- Servers outside the effective cpuset remain allocated but are disabled;
-  server activation and task placement are restricted to CPUs in the mask.
-- Bandwidth admission is now cpuset-aware and accounts for reservations only
-  on CPUs where the task group is active, including for disjoint cpusets.
+- A new per-cgroup `cpu.reclaim` knob enables or disables reclaim for all TGBS
+  servers in that group. It accepts `0` or `1` and is disabled by default.
+- Reclaim-enabled servers consume runtime through the SCHED_DEADLINE GRUB
+  accounting on their physical runqueue, sharing spare bandwidth with other
+  deadline entities on the same CPU.
+- TGBS reservations are now included directly in each root domain's admitted
+  deadline bandwidth. Root-domain and global admission checks therefore use a
+  single consistent accounting model, including after global runtime changes.
 
 ## Compatibility
 

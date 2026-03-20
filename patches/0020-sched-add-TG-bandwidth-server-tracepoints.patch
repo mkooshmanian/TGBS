@@ -1,7 +1,7 @@
 From 9b6ec1c5f72a377f1b89da82e736066be2d90036 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 26 Nov 2025 10:10:43 +0100
-Subject: [PATCH 20/25] sched: add TG bandwidth server tracepoints
+Subject: [PATCH 20/27] sched: add TG bandwidth server tracepoints
 
 Add tracepoints for TG bandwidth server start/stop, throttle/unthrottle, runtime
 accounting, and pick decisions to ease debugging with cgroup context.

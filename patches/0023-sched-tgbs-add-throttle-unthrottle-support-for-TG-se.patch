@@ -1,7 +1,7 @@
 From 73b0e4ea3f86a8f89a6da1bc2d2542590fc12c16 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 11 Dec 2025 17:06:19 +0100
-Subject: [PATCH 23/25] sched/tgbs: add throttle/unthrottle support for TG
+Subject: [PATCH 23/27] sched/tgbs: add throttle/unthrottle support for TG
  servers via irq_work
 
 Add the TG bandwidth server balancing logic: when a server throttles we push

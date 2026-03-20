@@ -1,7 +1,7 @@
 From 70a5db4d32a2f352ba5aff2ce04017ad98add4af Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:41:55 +0100
-Subject: [PATCH 02/25] sched/core: add task group bandwidth server scaffolding
+Subject: [PATCH 02/27] sched/core: add task group bandwidth server scaffolding
 
 Hook up the CONFIG_TG_BANDWIDTH_SERVER plumbing so task groups
 allocate, initialize and free their DL bandwidth servers, and

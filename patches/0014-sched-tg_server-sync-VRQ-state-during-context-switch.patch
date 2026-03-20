@@ -1,7 +1,7 @@
 From 7b38590e94acadaa1e00d130daf3af4ae6f7692e Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:36:19 +0100
-Subject: [PATCH 14/25] sched/tg_server: sync VRQ state during context switches
+Subject: [PATCH 14/27] sched/tg_server: sync VRQ state during context switches
  and wakeup preempt
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
