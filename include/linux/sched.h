@@ -1881,6 +1881,14 @@ extern int cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpu
 extern int task_can_attach(struct task_struct *p);
 extern int dl_bw_alloc(int cpu, u64 dl_bw);
 extern void dl_bw_free(int cpu, u64 dl_bw);
+#ifdef CONFIG_TG_BANDWIDTH_SERVER
+struct cgroup;
+extern void sched_tg_cpuset_cpumask_changed(struct cgroup *cgrp,
+					    const struct cpumask *mask);
+#else
+static inline void sched_tg_cpuset_cpumask_changed(struct cgroup *cgrp,
+						   const struct cpumask *mask) { }
+#endif
 
 /* do_set_cpus_allowed() - consider using set_cpus_allowed_ptr() instead */
 extern void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask);

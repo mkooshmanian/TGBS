@@ -9027,7 +9027,11 @@ int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int 
 		}
 	}
 
-	return have_best ? best_cpu : cpu;
+	if (have_best)
+		return best_cpu;
+
+	candidate = cpumask_any_and(p->cpus_ptr, tg_active_mask(tg));
+	return candidate < nr_cpu_ids ? candidate : cpu;
 }
 
 struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu)
