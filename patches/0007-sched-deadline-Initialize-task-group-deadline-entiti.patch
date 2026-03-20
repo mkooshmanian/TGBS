@@ -1,7 +1,7 @@
-From cc9ad465f76c0881019db747cf34fdfc1baedb0f Mon Sep 17 00:00:00 2001
+From 820ebb46311f832a121be0bee9b303506570c8df Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Tue, 4 Nov 2025 11:13:32 +0100
-Subject: [PATCH 07/22] sched/deadline: Initialize task-group deadline entities
+Subject: [PATCH 07/25] sched/deadline: Initialize task-group deadline entities
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -26,7 +26,7 @@ Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
  3 files changed, 125 insertions(+), 2 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 5f3ce89b1d03..57762fc76051 100644
+index e1f8bc7f7c02..9b694085d449 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9149,7 +9149,7 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)

@@ -1,7 +1,7 @@
-From 0261e9531d9f7c923c0ad8623fcc7a4637459eae Mon Sep 17 00:00:00 2001
+From b30ee848a14ac197757fab2b141614efb2858874 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:26:22 +0100
-Subject: [PATCH 12/22] sched/tg_server: start/stop/update TG dl server and
+Subject: [PATCH 13/25] sched/tg_server: start/stop/update TG dl server and
  keep nr_running alive
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ stop the tick while a server runs on the physical rq.
  4 files changed, 143 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index ef2cd7c27351..54f521390919 100644
+index 06843c90a67b..7cd2902034e6 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2162,8 +2162,92 @@ unsigned long get_wchan(struct task_struct *p)
@@ -33,7 +33,7 @@ index ef2cd7c27351..54f521390919 100644
 +	int cpu;
 +	struct sched_dl_entity *server;
 +
-+	if (!tg || tg == &root_task_group || !tg->tg_server)
++	if (!task_uses_tg_bandwidth_server(p))
 +		return;
 +
 +	/*
@@ -60,7 +60,7 @@ index ef2cd7c27351..54f521390919 100644
 +	int cpu;
 +	struct sched_dl_entity *server;
 +
-+	if (!tg || tg == &root_task_group || !tg->tg_server)
++	if (!task_uses_tg_bandwidth_server(p))
 +		return;
 +
 +	cpu = cpu_of(vrq);
@@ -86,7 +86,7 @@ index ef2cd7c27351..54f521390919 100644
 +		return;
 +
 +	tg = task_group(p);
-+	if (!tg || tg == &root_task_group || !tg->tg_server)
++	if (!task_uses_tg_bandwidth_server(p))
 +		return;
 +
 +	cpu = cpu_of(rq);
@@ -241,7 +241,7 @@ index 15a70b325e20..24467b78fbb1 100644
  		/* If not task, account the time against donor se  */
  		se->sum_exec_runtime += delta_exec;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index c66ddc361213..feaa3be61759 100644
+index d28c5ab7df6e..f19b96aa09c8 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -425,6 +425,9 @@ extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);

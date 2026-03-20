@@ -1,7 +1,7 @@
-From 8d72adc92f00ca9b3f8543ede886f67c7d42d1e3 Mon Sep 17 00:00:00 2001
+From fb2a072a0fc4b275690f8740a505b6a3e8845a18 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:45:40 +0100
-Subject: [PATCH 04/22] sched/core: expose task group bandwidth knobs via cpu 
+Subject: [PATCH 04/25] sched/core: expose task group bandwidth knobs via cpu 
  cgroup
 
 ---
@@ -9,7 +9,7 @@ Subject: [PATCH 04/22] sched/core: expose task group bandwidth knobs via cpu
  1 file changed, 40 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 3ad1b90fc155..bbd457e104bd 100644
+index c26428e0b42a..882d3a3cb0c8 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9676,6 +9676,32 @@ static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)

@@ -1,7 +1,7 @@
-From a56c90f520bf97cbe666bd182bc095eb72af1439 Mon Sep 17 00:00:00 2001
+From e94142080f80919918164b1ab9046d19b22ff1ca Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 16:50:53 +0100
-Subject: [PATCH 16/22] sched/dl: route DL tasks through TG server virtual rq
+Subject: [PATCH 17/25] sched/dl: route DL tasks through TG server virtual rq
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -22,8 +22,8 @@ move BW accounting to the TG server VRQ when a task changes cgroup.
  include/linux/sched.h   |  10 +-
  kernel/sched/core.c     |   8 +-
  kernel/sched/deadline.c | 264 ++++++++++++++++++++++++++++++++++++++--
- kernel/sched/sched.h    |   9 +-
- 4 files changed, 276 insertions(+), 15 deletions(-)
+ kernel/sched/sched.h    |  11 +-
+ 4 files changed, 277 insertions(+), 16 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 3f9845519196..25991138a647 100644
@@ -48,7 +48,7 @@ index 3f9845519196..25991138a647 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index ee6f9fcf9d47..702d603be165 100644
+index d09c5f769b2f..7250a77bb6c4 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9046,6 +9046,7 @@ void __init sched_init(void)
@@ -519,7 +519,7 @@ index d48e7558d269..e7b9b82f722d 100644
  
  bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 809ed06b0326..c84d1fb5d403 100644
+index 00a3d10661fe..6d27cb8cad35 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -430,6 +430,7 @@ extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
@@ -530,7 +530,7 @@ index 809ed06b0326..c84d1fb5d403 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -963,6 +964,10 @@ struct dl_rq {
+@@ -983,6 +984,10 @@ struct dl_rq {
  	 * by the GRUB algorithm.
  	 */
  	u64			bw_ratio;
@@ -541,8 +541,12 @@ index 809ed06b0326..c84d1fb5d403 100644
  };
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -2242,9 +2247,11 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
- 	if (!tg || tg == &root_task_group) {
+@@ -2259,12 +2264,14 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+ #endif
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+-	if (!tg || tg == &root_task_group) {
++	if (!task_uses_tg_bandwidth_server(p)) {
  		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
  		p->rt.rt_rq = &cpu_rq(cpu)->rt;
 +		p->dl.dl_rq = &cpu_rq(cpu)->dl;
@@ -553,7 +557,7 @@ index 809ed06b0326..c84d1fb5d403 100644
  	}
  #else
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -2556,7 +2563,7 @@ struct sched_class {
+@@ -2581,7 +2588,7 @@ struct sched_class {
  
  	void (*update_curr)(struct rq *rq);
  

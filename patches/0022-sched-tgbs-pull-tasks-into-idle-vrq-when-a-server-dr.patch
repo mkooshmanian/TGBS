@@ -1,7 +1,7 @@
-From b4e4867e7935940936e63ccdf36c2220eebb4e05 Mon Sep 17 00:00:00 2001
+From 2d4efc8ca97132bfaad6d9aaa4892e24ec73b22e Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:24:31 +0100
-Subject: [PATCH 21/22] sched/tgbs: pull tasks into idle vrq when a server
+Subject: [PATCH 22/25] sched/tgbs: pull tasks into idle vrq when a server
  drains
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ whenever migrable work exists elsewhere in the task group.
  5 files changed, 176 insertions(+), 1 deletion(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b4692d5482a2..2f54bcb2bf3c 100644
+index 73baabf97d97..b259b5bd8d46 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2163,6 +2163,9 @@ unsigned long get_wchan(struct task_struct *p)
@@ -36,7 +36,7 @@ index b4692d5482a2..2f54bcb2bf3c 100644
  static int tg_select_task_cpu(struct task_struct *p, int cpu)
  {
  	struct task_group *tg = task_group(p);
-@@ -2181,6 +2184,76 @@ static int tg_select_task_cpu(struct task_struct *p, int cpu)
+@@ -2182,6 +2185,76 @@ static int tg_select_task_cpu(struct task_struct *p, int cpu)
  	return cpu;
  }
  
@@ -61,7 +61,7 @@ index b4692d5482a2..2f54bcb2bf3c 100644
 +	int dst_cpu = cpu_of(dst_vrq);
 +	int cpu;
 +
-+	for_each_possible_cpu(cpu) {
++	for_each_cpu(cpu, tg_active_mask(tg)) {
 +		struct sched_dl_entity *server;
 +		struct rq *src_vrq;
 +		struct rq *src_phys;
@@ -113,7 +113,7 @@ index b4692d5482a2..2f54bcb2bf3c 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -2233,7 +2306,12 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2234,7 +2307,12 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	BUG_ON(vrq != server->vrq);
  
  	if (!READ_ONCE(vrq->nr_running)) {
@@ -127,7 +127,7 @@ index b4692d5482a2..2f54bcb2bf3c 100644
  
  		dl_server_stop(server);
  		if (was_active && !dl_server_active(server))
-@@ -2244,6 +2322,31 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2245,6 +2323,31 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	}
  }
  
@@ -160,7 +160,7 @@ index b4692d5482a2..2f54bcb2bf3c 100644
  					     struct task_struct *p,
  					     s64 delta_exec)
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index d7933b58e5fd..f5d7b0d7db54 100644
+index 915a0d5e4b96..0609599c563c 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -2768,6 +2768,35 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
@@ -200,7 +200,7 @@ index d7933b58e5fd..f5d7b0d7db54 100644
  
  static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
-index 6ffdf0bc553a..88a7220a1983 100644
+index d4a2b36df5e6..568479ed553c 100644
 --- a/kernel/sched/fair.c
 +++ b/kernel/sched/fair.c
 @@ -9029,6 +9029,23 @@ int tg_server_select_fair_cpu(struct task_struct *p, struct task_group *tg, int
@@ -228,7 +228,7 @@ index 6ffdf0bc553a..88a7220a1983 100644
  
  static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
-index 03144dd54343..9264627359f4 100644
+index 70d06d92287f..f1fccea8db30 100644
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
 @@ -1819,6 +1819,27 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
@@ -260,7 +260,7 @@ index 03144dd54343..9264627359f4 100644
  
  static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 4a24eb56eb4d..e3035c8b9a77 100644
+index 5d312c4f8598..4476c0ee21fe 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -433,6 +433,11 @@ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);

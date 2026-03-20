@@ -1,7 +1,7 @@
-From 8027f85021fd1f8337eed26239939386e56f3089 Mon Sep 17 00:00:00 2001
+From 2c508fd8b310a38f33d54b7b7228ebaa1ee68aef Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:04:44 +0100
-Subject: [PATCH 10/22] sched/tg_server: keep virtual rq clock in sync with
+Subject: [PATCH 11/25] sched/tg_server: keep virtual rq clock in sync with
  physical rq
 
 The TG virtual runqueue reuses rq_clock_task(), but its clock never advanced
@@ -19,7 +19,7 @@ with the physical rq for accounting and timer programming.
  4 files changed, 136 insertions(+), 4 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index a69395c3cd94..06700a11e762 100644
+index 10bf356a1893..27998e236eeb 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2082,6 +2082,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
@@ -163,7 +163,7 @@ index 5b752324270b..15a70b325e20 100644
  }
  
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 661a69c49ba5..c66ddc361213 100644
+index 8486b75e264a..d28c5ab7df6e 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -424,6 +424,7 @@ extern void sched_init_dl_servers(void);
@@ -174,7 +174,7 @@ index 661a69c49ba5..c66ddc361213 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -2521,15 +2522,59 @@ struct sched_class {
+@@ -2546,15 +2547,59 @@ struct sched_class {
  #endif
  };
  
@@ -236,7 +236,7 @@ index 661a69c49ba5..c66ddc361213 100644
  }
  
  static inline void
-@@ -2553,8 +2598,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
+@@ -2578,8 +2623,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
  	if (next == prev)
  		return;
  

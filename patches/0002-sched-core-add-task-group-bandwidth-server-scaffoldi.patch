@@ -1,7 +1,7 @@
-From b226c533c1e32b17e60090b30bfa560b72e94f8f Mon Sep 17 00:00:00 2001
+From 70a5db4d32a2f352ba5aff2ce04017ad98add4af Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:41:55 +0100
-Subject: [PATCH 02/22] sched/core: add task group bandwidth server scaffolding
+Subject: [PATCH 02/25] sched/core: add task group bandwidth server scaffolding
 
 Hook up the CONFIG_TG_BANDWIDTH_SERVER plumbing so task groups
 allocate, initialize and free their DL bandwidth servers, and
@@ -31,7 +31,7 @@ index b469878de25c..1b554219088d 100644
  	/*
  	 * Priority Inheritance. When a DEADLINE scheduling entity is boosted
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index f754a60de848..2dd07ca7d2c1 100644
+index f754a60de848..57f6172c4c8f 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -8657,6 +8657,9 @@ void __init sched_init(void)
@@ -60,7 +60,7 @@ index f754a60de848..2dd07ca7d2c1 100644
  	init_defrootdomain();
  
 +#ifdef CONFIG_TG_BANDWIDTH_SERVER
-+ 	// Initialises root bandwith with a 0s runtime and an arbitrary 1s period
++	/* Initialize root bandwidth with a zero runtime and a fixed period. */
 +	init_tg_bandwidth(&root_task_group.tg_bandwidth, 1 * NSEC_PER_SEC, 0);
 +#endif
 +

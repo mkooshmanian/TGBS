@@ -1,7 +1,7 @@
-From 3dc90d8c6e7e392b02b178e3c5ae790f960bba33 Mon Sep 17 00:00:00 2001
+From dde8767496b66b9bab326a75e01dc16cb4a5cade Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 2 Nov 2025 14:24:20 +0100
-Subject: [PATCH 03/22] sched/core: enforce hierarchical bandwidth for TG
+Subject: [PATCH 03/25] sched/core: enforce hierarchical bandwidth for TG
  servers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -26,7 +26,7 @@ Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
  2 files changed, 234 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 2dd07ca7d2c1..3ad1b90fc155 100644
+index 57f6172c4c8f..c26428e0b42a 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -1385,7 +1385,7 @@ bool sched_can_stop_tick(struct rq *rq)

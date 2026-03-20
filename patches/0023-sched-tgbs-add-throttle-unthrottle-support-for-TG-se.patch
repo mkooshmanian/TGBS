@@ -1,7 +1,7 @@
-From bad33690e468aa5f292db8cecd242890b6a76958 Mon Sep 17 00:00:00 2001
+From 73b0e4ea3f86a8f89a6da1bc2d2542590fc12c16 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 11 Dec 2025 17:06:19 +0100
-Subject: [PATCH 22/22] sched/tgbs: add throttle/unthrottle support for TG
+Subject: [PATCH 23/25] sched/tgbs: add throttle/unthrottle support for TG
  servers via irq_work
 
 Add the TG bandwidth server balancing logic: when a server throttles we push
@@ -36,7 +36,7 @@ index 25991138a647..ac2874f3dba1 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 2f54bcb2bf3c..4d8c90dd2984 100644
+index b259b5bd8d46..ff0f3765e0d3 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -39,6 +39,8 @@
@@ -59,7 +59,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  static void __balance_callbacks(struct rq *rq);
  
  struct rq *vrq_of_tg(struct task_group *tg, int cpu)
-@@ -2200,10 +2206,22 @@ tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
+@@ -2201,10 +2207,22 @@ tg_server_pull_task_from_cpu(struct rq *src_rq, int dst_cpu)
  	return tg_server_pull_fair_task_from_cpu(src_rq, dst_cpu);
  }
  
@@ -81,9 +81,9 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
 +	if (READ_ONCE(dst_vrq->nr_running))
 +		goto out_unlock;
  
- 	for_each_possible_cpu(cpu) {
+ 	for_each_cpu(cpu, tg_active_mask(tg)) {
  		struct sched_dl_entity *server;
-@@ -2232,8 +2250,10 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2233,8 +2251,10 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
  		if (!raw_spin_rq_trylock(src_phys))
  			continue;
  
@@ -96,7 +96,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  
  		p = tg_server_pull_task_from_cpu(src_vrq, dst_cpu);
  		if (p) {
-@@ -2241,12 +2261,83 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2242,12 +2262,83 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
  			update_rq_clock(dst_vrq);
  
  			move_queued_task_locked(src_vrq, dst_vrq, p);
@@ -131,7 +131,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
 +
 +	lockdep_assert_rq_held(src_vrq);
 +
-+	for_each_possible_cpu(cpu) {
++	for_each_cpu(cpu, tg_active_mask(tg)) {
 +		struct sched_dl_entity *server;
 +		struct rq *dst_vrq;
 +		struct rq *dst_phys;
@@ -181,7 +181,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  		if (p)
  			return true;
  	}
-@@ -2254,6 +2345,151 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2255,6 +2346,151 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
  	return false;
  }
  
@@ -209,7 +209,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
 +	bool idle, pulled = false;
 +
 +	tg = READ_ONCE(server->tg);
-+	if (!tg || tg == &root_task_group)
++	if (!tg_uses_bandwidth_server(tg))
 +		return;
 +
 +	vrq = READ_ONCE(server->vrq);
@@ -247,7 +247,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
 +	bool retry = false;
 +
 +	tg = READ_ONCE(server->tg);
-+	if (!tg || tg == &root_task_group)
++	if (!tg_uses_bandwidth_server(tg))
 +		return;
 +
 +	vrq = READ_ONCE(server->vrq);
@@ -333,7 +333,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -2308,6 +2544,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2309,6 +2545,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	if (!READ_ONCE(vrq->nr_running)) {
  		bool was_active;
  
@@ -342,7 +342,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  		if (tg_server_pull_task(tg, vrq))
  			return;
  
-@@ -2380,33 +2618,45 @@ void tg_server_account_runtime(struct rq *rq,
+@@ -2381,33 +2619,45 @@ void tg_server_account_runtime(struct rq *rq,
  void tg_server_handle_throttle(struct sched_dl_entity *server)
  {
  	struct rq *rq;
@@ -358,15 +358,15 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
 +		return;
 +
 +	if (server == &rq->fair_server)
-+		return;
-+
-+	tg = READ_ONCE(server->tg);
-+	if (!tg || tg == &root_task_group)
  		return;
  
 -	trace_sched_tg_server_throttle(server->tg, server, cpu_of(rq),
 -				       server->vrq ? cpu_of(server->vrq) : -1,
 -				       cgroup_id(server->tg->css.cgroup));
++	tg = READ_ONCE(server->tg);
++	if (!tg_uses_bandwidth_server(tg))
++		return;
++
 +	tg_server_queue_action(rq, server, TG_SERVER_ACTION_THROTTLE);
  }
  
@@ -388,7 +388,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
 +		return;
 +
 +	tg = READ_ONCE(server->tg);
-+	if (!tg || tg == &root_task_group)
++	if (!tg_uses_bandwidth_server(tg))
  		return;
  
 -	trace_sched_tg_server_unthrottle(server->tg, server, cpu_of(rq),
@@ -398,7 +398,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  }
  #endif
  
-@@ -9259,6 +9509,8 @@ void __init sched_init(void)
+@@ -9260,6 +9510,8 @@ void __init sched_init(void)
  		rq->cfs.rq = rq;
  		rq->rt.rq = rq;
  		rq->dl.rq = rq;
@@ -407,7 +407,7 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  #endif
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
-@@ -9771,6 +10023,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -9772,6 +10024,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
  	server->tg = tg;
  	server->vrq = vrq;
  	server->parent = parent;
@@ -418,10 +418,10 @@ index 2f54bcb2bf3c..4d8c90dd2984 100644
  	vrq->cfs.rq = vrq;
  	vrq->rt.rq = vrq;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index e3035c8b9a77..4ee0eb0417bc 100644
+index 4476c0ee21fe..7b1520b5551a 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -1238,6 +1238,11 @@ struct rq {
+@@ -1258,6 +1258,11 @@ struct rq {
  
  	struct sched_dl_entity	fair_server;
  
