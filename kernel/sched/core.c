@@ -9477,6 +9477,9 @@ void __init sched_init(void)
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 	/* Initialize root bandwidth with a zero runtime and a fixed period. */
 	init_tg_bandwidth(&root_task_group.tg_bandwidth, 1 * NSEC_PER_SEC, 0);
+	BUG_ON(!zalloc_cpumask_var(&root_task_group.active_server_mask,
+				   GFP_NOWAIT));
+	cpumask_copy(root_task_group.active_server_mask, cpu_possible_mask);
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
@@ -10131,8 +10134,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
 	if (!tg->tg_server)
 		return -ENOMEM;
 
-	// Initialise the bandwidth with parent's period but a 0s runtime
+	if (!zalloc_cpumask_var(&tg->active_server_mask, GFP_KERNEL))
+		goto err_free_mask;
+
+	/* Initialize the bandwidth with the parent's period and no runtime. */
 	init_tg_bandwidth(&tg->tg_bandwidth, parent->tg_bandwidth.dl_period, 0);
+	cpumask_copy(tg->active_server_mask, tg_active_mask(parent));
 
 	for_each_possible_cpu(cpu) {
 		struct sched_dl_entity *server;
@@ -10181,6 +10188,13 @@ err_free:
 	}
 	kfree(tg->tg_server);
 	tg->tg_server = NULL;
+	free_cpumask_var(tg->active_server_mask);
+
+	return 0;
+
+err_free_mask:
+	kfree(tg->tg_server);
+	tg->tg_server = NULL;
 
 	return 0;
 }
@@ -10223,9 +10237,48 @@ void free_tg_bandwidth_server(struct task_group *tg)
 
 	kfree(tg->tg_server);
 	tg->tg_server = NULL;
+	free_cpumask_var(tg->active_server_mask);
 }
 
 static DEFINE_MUTEX(tg_bandwidth_constraints_mutex);
+
+int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+{
+	cpumask_var_t active_mask;
+	u64 runtime, period;
+	int cpu;
+
+	if (!tg_uses_bandwidth_server(tg) ||
+	    !cpumask_available(tg->active_server_mask))
+		return 0;
+
+	if (!zalloc_cpumask_var(&active_mask, GFP_KERNEL))
+		return -ENOMEM;
+
+	cpumask_and(active_mask, mask, cpu_active_mask);
+	if (tg->parent)
+		cpumask_and(active_mask, active_mask, tg_active_mask(tg->parent));
+
+	guard(mutex)(&tg_bandwidth_constraints_mutex);
+
+	if (cpumask_equal(tg->active_server_mask, active_mask))
+		goto out_free;
+
+	cpumask_copy(tg->active_server_mask, active_mask);
+
+	runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+	period = READ_ONCE(tg->tg_bandwidth.dl_period);
+
+	for_each_possible_cpu(cpu) {
+		u64 cpu_runtime = tg_server_cpu_active(tg, cpu) ? runtime : 0;
+
+		init_tg_dl_se(tg, cpu, cpu_runtime, period);
+	}
+
+out_free:
+	free_cpumask_var(active_mask);
+	return 0;
+}
 
 struct tg_bandwidth_schedulable_data {
 	struct task_group *tg;
@@ -10352,7 +10405,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
 		return 0;
 
 	for_each_possible_cpu(cpu) {
-		init_tg_dl_se(tg, cpu, runtime, period);
+		u64 cpu_runtime = tg_server_cpu_active(tg, cpu) ? runtime : 0;
+
+		init_tg_dl_se(tg, cpu, cpu_runtime, period);
 	}
 
 	return ret;
