@@ -1197,6 +1197,22 @@ void cpuset_update_tasks_cpumask(struct cpuset *cs, struct cpumask *new_cpus)
 	css_task_iter_end(&it);
 }
 
+int cpuset_cgroup_effective_cpus(struct cgroup *cgrp, struct cpumask *mask)
+{
+	struct cgroup_subsys_state *css;
+	struct cpuset *cs;
+
+	css = cgroup_get_e_css(cgrp, &cpuset_cgrp_subsys);
+	if (!css)
+		return -ENOENT;
+
+	cs = css_cs(css);
+	cpumask_copy(mask, cs->effective_cpus);
+	css_put(css);
+
+	return 0;
+}
+
 /**
  * compute_effective_cpumask - Compute the effective cpumask of the cpuset
  * @new_cpus: the temp variable for the new effective_cpus mask
@@ -2275,6 +2291,8 @@ get_css:
 		WARN_ON(!is_in_v2_mode() &&
 			!cpumask_equal(cp->cpus_allowed, cp->effective_cpus));
 
+		sched_tg_cpuset_cpumask_changed(cp->css.cgroup,
+						cp->effective_cpus);
 		cpuset_update_tasks_cpumask(cp, cp->effective_cpus);
 
 		/*
