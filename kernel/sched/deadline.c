@@ -1715,7 +1715,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64 
 		return;
 
 	scaled_delta_exec = delta_exec;
-	if (!dl_server(dl_se))
+	/*
+	 * Allow reclaim-enabled TG bandwidth servers to consume runtime
+	 * according to GRUB against the physical DL runqueue they share.
+	 */
+	if (!dl_server(dl_se) || (dl_se->flags & SCHED_FLAG_RECLAIM))
 		scaled_delta_exec = dl_scaled_delta_exec(rq, dl_se, delta_exec);
 
 	dl_se->runtime -= scaled_delta_exec;

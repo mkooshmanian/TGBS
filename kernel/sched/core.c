@@ -10111,6 +10111,12 @@ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
 	raw_spin_lock_init(&dl_bw->dl_runtime_lock);
 	dl_bw->dl_period = period;
 	dl_bw->dl_runtime = runtime;
+	dl_bw->dl_reclaim = 0;
+}
+
+static inline unsigned int tg_server_sched_flags(struct task_group *tg)
+{
+	return READ_ONCE(tg->tg_bandwidth.dl_reclaim) ? SCHED_FLAG_RECLAIM : 0;
 }
 
 static struct rq *alloc_virtual_rq(struct task_group *tg, int cpu,
@@ -10234,6 +10240,7 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
 		server->dl_deadline = server->dl_period;
 		server->dl_bw = to_ratio(server->dl_period, server->dl_runtime);
 		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
+		server->flags = tg_server_sched_flags(tg);
 		server->dl_server = 1;
 
 		dl_server_init(server, parent_rq, tg_bandwidth_server_pick_task);
@@ -10470,6 +10477,43 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
 	}
 
 	return ret;
+}
+
+int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim)
+{
+	unsigned int sched_flags = reclaim ? SCHED_FLAG_RECLAIM : 0;
+	int cpu;
+
+	if (tg == &root_task_group)
+		return -EPERM;
+
+	guard(mutex)(&tg_bandwidth_constraints_mutex);
+	WRITE_ONCE(tg->tg_bandwidth.dl_reclaim, reclaim);
+
+	for_each_possible_cpu(cpu) {
+		struct sched_dl_entity *server = tg->tg_server[cpu];
+		struct rq *rq;
+		unsigned long flags;
+
+		if (!server)
+			continue;
+
+		rq = server->rq;
+		if (!rq)
+			continue;
+
+		raw_spin_rq_lock_irqsave(rq, flags);
+		server->flags &= ~SCHED_FLAG_RECLAIM;
+		server->flags |= sched_flags;
+		raw_spin_rq_unlock_irqrestore(rq, flags);
+	}
+
+	return 0;
+}
+
+long sched_group_tg_reclaim(struct task_group *tg)
+{
+	return READ_ONCE(tg->tg_bandwidth.dl_reclaim);
 }
 
 int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us)
@@ -10835,6 +10879,21 @@ static u64 cpu_tg_period_read_uint(struct cgroup_subsys_state *css,
 				   struct cftype *cft)
 {
 	return sched_group_tg_period(css_tg(css));
+}
+
+static int cpu_tg_reclaim_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, s64 val)
+{
+	if (val != 0 && val != 1)
+		return -EINVAL;
+
+	return sched_group_set_tg_reclaim(css_tg(css), val);
+}
+
+static s64 cpu_tg_reclaim_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_tg_reclaim(css_tg(css));
 }
 #endif /* CONFIG_TG_BANDWIDTH_SERVER */
 
@@ -11749,6 +11808,12 @@ static struct cftype cpu_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_u64 = cpu_tg_period_read_uint,
 		.write_u64 = cpu_tg_period_write_uint,
+	},
+	{
+		.name = "reclaim",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_tg_reclaim_read,
+		.write_s64 = cpu_tg_reclaim_write,
 	},
 #endif
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
