@@ -520,6 +520,7 @@ static void tg_dl_change_bw(struct rq *rq, u64 old_bw, u64 new_bw)
 	raw_spin_lock(&dl_b->lock);
 	dl_b->total_bw = dl_b->total_bw - old_bw + new_bw;
 	/*
+	 * Root servers also use this path when CPUs join or leave a domain.
 	 * Recompute the share: the previous per-CPU share may have been
 	 * calculated with a different number of active CPUs.
 	 */
@@ -535,6 +536,21 @@ static void tg_dl_change_bw(struct rq *rq, u64 old_bw, u64 new_bw)
 	raw_spin_unlock(&dl_b->lock);
 	rcu_read_unlock_sched();
 }
+
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+static void root_tg_dl_update_bw(struct rq *rq, bool online)
+{
+	struct sched_dl_entity *server;
+
+	if (!root_task_group.tg_server)
+		return;
+
+	server = root_task_group.tg_server[cpu_of(rq)];
+	if (server)
+		tg_dl_change_bw(rq, online ? 0 : server->dl_bw,
+				online ? server->dl_bw : 0);
+}
+#endif
 
 void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 {
@@ -565,16 +581,28 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	is_active_group = is_active_sched_group(tg);
 
 	raw_spin_rq_lock_irqsave(rq, flags);
-	update_rq_clock(rq);
+	/* Secondary rqs have no current task yet during sched_init(). */
+	if (rq->curr)
+		update_rq_clock(rq);
 	dl_server_stop(dl_se);
 
 	old_bw = dl_se->dl_bw;
 	old_runtime = dl_se->dl_runtime;
 	new_bw = to_ratio(period, runtime);
 
-	tg_dl_change_bw(rq, old_bw, new_bw);
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	/* Offline root servers are prepared, but not admitted in the rd. */
+	if (tg != &root_task_group || rq->online)
+#endif
+		tg_dl_change_bw(rq, old_bw, new_bw);
 
-	if (is_active_group)
+	if (is_active_group ||
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	    tg == &root_task_group
+#else
+	    false
+#endif
+	)
 		dl_rq_change_utilization(rq, dl_se, new_bw);
 
 	dl_se->dl_runtime = runtime;
@@ -589,7 +617,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	tg_server_update_dl_rq(dl_se);
 
 	parent = dl_se->parent;
-	/* Root task group has no explicit server entry, skip parent bandwidth tweaks. */
+	/* Direct children of root stay top-level servers on the physical rq. */
 	if (tg->parent && tg->parent != &root_task_group && parent &&
 	    !sched_group_has_active_siblings(tg)) {
 		if (!runtime && old_runtime)
@@ -603,7 +631,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	nr_task_running = vrq->nr_running;
 	raw_spin_rq_unlock(vrq);
 
-	if (nr_task_running)
+	if (nr_task_running && runtime && cpu_online(cpu))
 		dl_server_start(dl_se);
 
 	raw_spin_rq_unlock_irqrestore(rq, flags);
@@ -1805,7 +1833,10 @@ throttle:
 		}
 
 		if (unlikely(is_dl_boosted(dl_se) || !start_dl_timer(dl_se))) {
-			if (dl_server(dl_se)) {
+			if (dl_server(dl_se) && !dl_se->dl_defer) {
+				/* The replenishment is already due; do not wait another period. */
+				enqueue_dl_entity(dl_se, ENQUEUE_REPLENISH);
+			} else if (dl_server(dl_se)) {
 				replenish_dl_new_period(dl_se, rq);
 				start_dl_timer(dl_se);
 			} else {
@@ -1896,7 +1927,7 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 {
 	struct rq *rq = dl_se->rq;
 
-	if (!dl_server(dl_se) || dl_se->dl_server_active)
+	if (!dl_server(dl_se) || !dl_se->dl_runtime || dl_se->dl_server_active)
 		return;
 
 	if (WARN_ON_ONCE(!cpu_online(cpu_of(rq))))
@@ -1937,7 +1968,9 @@ void sched_init_dl_servers(void)
 	struct sched_dl_entity *dl_se;
 
 	for_each_online_cpu(cpu) {
-		u64 runtime =  50 * NSEC_PER_MSEC;
+		/* Root TG servers also serve FAIR tasks, leaving the physical CFS rq empty. */
+		u64 runtime = IS_ENABLED(CONFIG_ROOT_TG_BANDWIDTH_SERVER) ?
+			0 : 50 * NSEC_PER_MSEC;
 		u64 period = 1000 * NSEC_PER_MSEC;
 
 		rq = cpu_rq(cpu);
@@ -1952,7 +1985,8 @@ void sched_init_dl_servers(void)
 
 		dl_se->dl_server = 1;
 		dl_se->dl_defer = 1;
-		setup_new_dl_entity(dl_se);
+		if (runtime)
+			setup_new_dl_entity(dl_se);
 	}
 }
 
@@ -3337,6 +3371,10 @@ static void set_cpus_allowed_dl(struct task_struct *p,
 /* Assumes rq->lock is held */
 static void rq_online_dl(struct rq *rq)
 {
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	root_tg_dl_update_bw(rq, true);
+#endif
+
 	if (rq->dl.overloaded)
 		dl_set_overload(rq);
 
@@ -3348,6 +3386,10 @@ static void rq_online_dl(struct rq *rq)
 /* Assumes rq->lock is held */
 static void rq_offline_dl(struct rq *rq)
 {
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	root_tg_dl_update_bw(rq, false);
+#endif
+
 	if (rq->dl.overloaded)
 		dl_clear_overload(rq);
 
@@ -3418,6 +3460,17 @@ void dl_clear_root_domain(struct root_domain *rd)
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 	rcu_read_lock_sched();
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	for_each_cpu(i, rd->span) {
+		struct sched_dl_entity *dl_se = READ_ONCE(root_task_group.tg_server[i]);
+
+		if (!cpu_active(i) || !dl_se || !dl_server(dl_se) ||
+		    !dl_se->dl_runtime)
+			continue;
+
+		__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(i));
+	}
+#endif
 	list_for_each_entry_rcu(tg, &task_groups, list) {
 		if (tg == &root_task_group || !tg_uses_bandwidth_server(tg))
 			continue;
@@ -3672,10 +3725,38 @@ int sched_dl_global_validate(void)
 		dl_b = dl_bw_of(cpu);
 		cpus = dl_bw_cpus(cpu);
 
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+		{
+			struct root_domain *rd = cpu_rq(cpu)->rd;
+			u64 root_bw = 0;
+			u64 non_root_bw;
+			int i;
+
+			if (root_task_group.tg_server) {
+				for_each_cpu(i, rd->span) {
+					struct sched_dl_entity *server;
+
+					server = READ_ONCE(root_task_group.tg_server[i]);
+					if (!cpu_active(i) || !server || !server->dl_runtime)
+						continue;
+
+					root_bw += server->dl_bw;
+				}
+			}
+
+			raw_spin_lock_irqsave(&dl_b->lock, flags);
+			non_root_bw = dl_b->total_bw > root_bw ?
+				dl_b->total_bw - root_bw : 0;
+			if (new_bw * cpus < non_root_bw)
+				ret = -EBUSY;
+			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+		}
+#else
 		raw_spin_lock_irqsave(&dl_b->lock, flags);
 		if (new_bw * cpus < dl_b->total_bw)
 			ret = -EBUSY;
 		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+#endif
 
 next:
 		rcu_read_unlock_sched();
@@ -3747,6 +3828,10 @@ void sched_dl_do_global(void)
 
 		rcu_read_unlock_sched();
 	}
+
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	tg_recalc_root_bandwidth();
+#endif
 }
 
 /*

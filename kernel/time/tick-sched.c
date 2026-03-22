@@ -1156,6 +1156,12 @@ static bool report_idle_softirq(void)
 	if (local_bh_blocked())
 		return false;
 
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	/* Keep the tick while ksoftirqd waits for its root server's budget. */
+	if (sched_softirq_throttled())
+		return true;
+#endif
+
 	if (ratelimit < 10) {
 		pr_warn("NOHZ tick-stop error: local softirq work is pending, handler #%02x!!!\n",
 			pending);
