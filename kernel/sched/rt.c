@@ -19,9 +19,13 @@ int sysctl_sched_rt_period = 1000000;
 
 /*
  * part of the period that we allow rt tasks to run in us.
- * default: 0.95s
+ * default: 1s with a root TG server, 0.95s otherwise.
  */
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+int sysctl_sched_rt_runtime = 1000000;
+#else
 int sysctl_sched_rt_runtime = 950000;
+#endif
 
 #ifdef CONFIG_SYSCTL
 static int sysctl_sched_rr_timeslice = (MSEC_PER_SEC * RR_TIMESLICE) / HZ;

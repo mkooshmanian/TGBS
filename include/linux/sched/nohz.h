@@ -2,9 +2,15 @@
 #ifndef _LINUX_SCHED_NOHZ_H
 #define _LINUX_SCHED_NOHZ_H
 
+#include <linux/types.h>
+
 /*
  * This is the interface between the scheduler and nohz/dynticks:
  */
+
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+bool sched_softirq_throttled(void);
+#endif
 
 #ifdef CONFIG_NO_HZ_COMMON
 extern void nohz_balance_enter_idle(int cpu);

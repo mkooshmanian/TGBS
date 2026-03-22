@@ -1167,6 +1167,18 @@ config TG_BANDWIDTH_SERVER
 	  the Constant Bandwidth Server logic at the cgroup/task_group scope
 	  rather than at per-task granularity.
 
+config ROOT_TG_BANDWIDTH_SERVER
+	bool "Root task group bandwidth server"
+	depends on TG_BANDWIDTH_SERVER
+	default n
+	help
+	  Create and enable a TG bandwidth server for the root task group.
+
+	  When enabled, tasks in the root CPU cgroup run on a dedicated
+	  per-CPU TG virtual runqueue served by a CBS reservation derived
+	  from the residual global DEADLINE bandwidth after the root task
+	  group's direct children.
+
 endif #CGROUP_SCHED
 
 config SCHED_MM_CID
