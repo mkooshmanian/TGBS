@@ -1,7 +1,7 @@
 From dde8767496b66b9bab326a75e01dc16cb4a5cade Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 2 Nov 2025 14:24:20 +0100
-Subject: [PATCH 03/27] sched/core: enforce hierarchical bandwidth for TG
+Subject: [PATCH 03/28] sched/core: enforce hierarchical bandwidth for TG
  servers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

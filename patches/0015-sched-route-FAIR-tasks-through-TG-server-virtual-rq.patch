@@ -1,7 +1,7 @@
-From 58b8a072e5ae97696b8a406202f1b3755f4d8273 Mon Sep 17 00:00:00 2001
+From 0c569e074705b48a10c16b43a39eda64421085b2 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:48:44 +0100
-Subject: [PATCH 15/27] sched: route FAIR tasks through TG server virtual rq
+Subject: [PATCH 15/28] sched: route FAIR tasks through TG server virtual rq
 
 Attach FAIR tasks to the server virtual runqueue to reuse the FAIR
 picker. Cache the sched_entity cfs_rq, expose task_of() and related
@@ -36,10 +36,10 @@ index 69d709aae15e..284fc0eb0570 100644
  	struct cfs_rq			*my_q;
  	/* cached value of my_q->h_nr_running */
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 76adbd3cde28..26ff623639ce 100644
+index 5303b9f72f67..12d8c1c35f5f 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9044,6 +9044,7 @@ void __init sched_init(void)
+@@ -9046,6 +9046,7 @@ void __init sched_init(void)
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  		/* Root task group has no parent: keep entries NULL to stop traversal here. */
  		root_task_group.tg_server[i] = NULL;
@@ -47,7 +47,7 @@ index 76adbd3cde28..26ff623639ce 100644
  #endif
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
-@@ -9504,8 +9505,28 @@ unsigned long tg_root_bandwidth_sum(void)
+@@ -9506,8 +9507,28 @@ unsigned long tg_root_bandwidth_sum(void)
  static struct task_struct *
  tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  {
@@ -78,7 +78,7 @@ index 76adbd3cde28..26ff623639ce 100644
  }
  
  void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
-@@ -9516,6 +9537,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -9518,6 +9539,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
  	server->vrq = vrq;
  	server->parent = parent;
  	tg->tg_server[cpu] = server;

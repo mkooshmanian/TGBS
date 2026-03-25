@@ -1,7 +1,7 @@
 From 767987fb867fd0bdfd6a0d241df8165818b734d8 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:24:29 +0100
-Subject: [PATCH 01/27] sched: add TG_BANDWIDTH_SERVER Kconfig option
+Subject: [PATCH 01/28] sched: add TG_BANDWIDTH_SERVER Kconfig option
 
 Introduce a dedicated Kconfig toggle so the Task Group Bandwidth Server
 can be enabled whenever CGROUP_SCHED and SCHED_DEADLINE are available.

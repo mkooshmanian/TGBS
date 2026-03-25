@@ -1,7 +1,7 @@
 From 120e0e0dd0e12862a9e10f06bbd483f26656b798 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:49:21 +0100
-Subject: [PATCH 05/27] sched/deadline: Account TG bandwidth servers in 
+Subject: [PATCH 05/28] sched/deadline: Account TG bandwidth servers in 
  schedulability tests
 
 Account the TG bandwidth server hierarchy in the schedulability checks

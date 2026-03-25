@@ -1,0 +1,618 @@
+From 713c3ae9db374d9882922037afc8a89bb1ce2cd8 Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Sun, 22 Mar 2026 16:42:11 +0100
+Subject: [PATCH 28/28] sched/tgbs: add optional root task-group bandwidth
+ server
+
+Add an optional TG bandwidth server for the root task group.
+
+When enabled, root-cgroup tasks run on a per-CPU virtual rq served
+by a root CBS, while idle and stop tasks remain on the physical rq.
+
+Derive the root runtime from the residual DEADLINE bandwidth left
+after its direct children and keep it aligned with the root active
+server mask.
+
+Recompute the root reservation when a direct child changes runtime or
+period, when a child is onlined or released, when the effective
+cpuset changes, or when the global DEADLINE bandwidth is updated.
+
+Also account root TG servers in rd->dl_bw.total_bw so they coexist
+properly with the fair server on the physical rq.
+
+With CONFIG_ROOT_TG_BANDWIDTH_SERVER disabled, behavior is unchanged.
+---
+ init/Kconfig            |  12 ++
+ kernel/sched/core.c     | 244 +++++++++++++++++++++++++++++++++++++++-
+ kernel/sched/deadline.c |  55 ++++++++-
+ kernel/sched/sched.h    |  22 ++--
+ 4 files changed, 318 insertions(+), 15 deletions(-)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index c2f5f6df6016..1aa94d0a0385 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1167,6 +1167,18 @@ config TG_BANDWIDTH_SERVER
+ 	  the Constant Bandwidth Server logic at the cgroup/task_group scope
+ 	  rather than at per-task granularity.
+ 
++config ROOT_TG_BANDWIDTH_SERVER
++	bool "Root task group bandwidth server"
++	depends on TG_BANDWIDTH_SERVER
++	default n
++	help
++	  Create and enable a TG bandwidth server for the root task group.
++
++	  When enabled, tasks in the root CPU cgroup run on a dedicated
++	  per-CPU TG virtual runqueue served by a CBS reservation derived
++	  from the residual global DEADLINE bandwidth after the root task
++	  group's direct children.
++
+ endif #CGROUP_SCHED
+ 
+ config SCHED_MM_CID
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 139fc94315cf..b039eb01d3df 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -2104,6 +2104,22 @@ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
+ 	return READ_ONCE(server->vrq);
+ }
+ 
++bool task_uses_tg_bandwidth_server(struct task_struct *p)
++{
++	struct task_group *tg = task_group(p);
++
++	if (!tg_uses_bandwidth_server(tg))
++		return false;
++
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (tg == &root_task_group &&
++	    (is_idle_task(p) || p->sched_class == &stop_sched_class))
++		return false;
++#endif
++
++	return true;
++}
++
+ void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf)
+ {
+ 	raw_spin_rq_lock_nested(rq, SINGLE_DEPTH_NESTING);
+@@ -9365,8 +9381,19 @@ int sched_cpu_dying(unsigned int cpu)
+ }
+ #endif /* CONFIG_HOTPLUG_CPU */
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++static void __init init_root_tg_bandwidth_server(void);
++#endif
++
+ void __init sched_init_smp(void)
+ {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	init_root_tg_bandwidth_server();
++	tg_recalc_root_bandwidth();
++#endif
++#endif
++
+ 	sched_init_numa(NUMA_NO_NODE);
+ 
+ 	/*
+@@ -9477,7 +9504,7 @@ void __init sched_init(void)
+ 	init_defrootdomain();
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+-	/* Initialize root bandwidth with a zero runtime and a fixed period. */
++	/* Root bandwidth is derived from children; use a fixed reservation window. */
+ 	init_tg_bandwidth(&root_task_group.tg_bandwidth, 1 * NSEC_PER_SEC, 0);
+ 	BUG_ON(!zalloc_cpumask_var(&root_task_group.active_server_mask,
+ 				   GFP_NOWAIT));
+@@ -9510,8 +9537,10 @@ void __init sched_init(void)
+ 		init_rt_rq(&rq->rt);
+ 		init_dl_rq(&rq->dl);
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
++#ifndef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+ 		/* Root task group has no parent: keep entries NULL to stop traversal here. */
+ 		root_task_group.tg_server[i] = NULL;
++#endif
+ 		rq->cfs.rq = rq;
+ 		rq->rt.rq = rq;
+ 		rq->dl.rq = rq;
+@@ -9622,6 +9651,13 @@ void __init sched_init(void)
+ 	__sched_fork(0, current);
+ 	init_idle(current, smp_processor_id());
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	init_root_tg_bandwidth_server();
++	tg_recalc_root_bandwidth();
++#endif
++#endif
++
+ 	calc_load_update = jiffies + LOAD_FREQ;
+ 
+ 	idle_thread_set_boot_cpu();
+@@ -9915,6 +9951,16 @@ static unsigned long tg_effective_bw_on_cpu(struct task_group *tg, int cpu,
+ 	return to_ratio(period, runtime);
+ }
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++static unsigned long tg_root_dl_bandwidth_limit(void)
++{
++	if (global_rt_runtime() == RUNTIME_INF)
++		return BW_UNIT;
++
++	return to_ratio(global_rt_period(), global_rt_runtime());
++}
++#endif
++
+ static const struct cpumask *
+ tg_schedulable_mask(const struct tg_bandwidth_schedulable_data *d,
+ 		    struct task_group *tg)
+@@ -9950,6 +9996,20 @@ static u64 tg_root_domain_server_bw(struct root_domain *rd)
+ 	RCU_LOCKDEP_WARN(!rcu_read_lock_sched_held(),
+ 			 "sched RCU must be held");
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (root_task_group.tg_server) {
++		for_each_cpu(cpu, rd->span) {
++			struct sched_dl_entity *server;
++
++			server = READ_ONCE(root_task_group.tg_server[cpu]);
++			if (!cpu_active(cpu) || !server || !server->dl_runtime)
++				continue;
++
++			total += server->dl_bw;
++		}
++	}
++#endif
++
+ 	list_for_each_entry_rcu(tg, &task_groups, list) {
+ 		if (tg == &root_task_group || !tg_uses_bandwidth_server(tg))
+ 			continue;
+@@ -10042,6 +10102,90 @@ static bool tg_has_tasks(struct task_group *tg)
+ 	return ret;
+ }
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++static unsigned long tg_root_children_bandwidth_sum(void)
++{
++	struct tg_bandwidth_schedulable_data data = {
++		.tg = NULL,
++	};
++	struct task_group *child;
++	unsigned long sum = 0;
++	int cpu;
++
++	rcu_read_lock();
++	for_each_possible_cpu(cpu) {
++		unsigned long cpu_sum = 0;
++
++		list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
++			unsigned long child_bw = tg_schedulable_bw(&data, child, cpu);
++
++			if (cpu_sum + child_bw < cpu_sum) {
++				cpu_sum = ULONG_MAX;
++				break;
++			}
++
++			cpu_sum += child_bw;
++		}
++
++		if (sum < cpu_sum)
++			sum = cpu_sum;
++	}
++	rcu_read_unlock();
++
++	return sum;
++}
++
++/*
++ * A CBS with runtime == period has no slack to absorb timer and accounting
++ * latency. Keep a tiny guard band so the root server does not fall into the
++ * degenerate 100% case when sched_rt_runtime_us is set to sched_rt_period_us.
++ */
++static const u64 root_tg_runtime_guard = 1 * NSEC_PER_MSEC;
++
++static u64 tg_root_bandwidth_runtime(u64 period)
++{
++	unsigned long limit = tg_root_dl_bandwidth_limit();
++	unsigned long used = tg_root_children_bandwidth_sum();
++	unsigned long residual = limit > used ? limit - used : 0;
++	u64 runtime;
++
++	runtime = div64_u64((u64)residual * period, BW_UNIT);
++
++	if (runtime == period) {
++		if (period > root_tg_runtime_guard)
++			runtime -= root_tg_runtime_guard;
++		else if (period > 1)
++			runtime--;
++	}
++
++	return runtime;
++}
++
++void tg_recalc_root_bandwidth(void)
++{
++	u64 period, runtime;
++	unsigned long flags;
++	int cpu;
++
++	if (!root_task_group.tg_server)
++		return;
++
++	period = READ_ONCE(root_task_group.tg_bandwidth.dl_period);
++	runtime = tg_root_bandwidth_runtime(period);
++
++	raw_spin_lock_irqsave(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
++	root_task_group.tg_bandwidth.dl_runtime = runtime;
++	raw_spin_unlock_irqrestore(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
++
++	for_each_possible_cpu(cpu) {
++		u64 cpu_runtime = tg_server_cpu_active(&root_task_group, cpu) ?
++			runtime : 0;
++
++		init_tg_dl_se(&root_task_group, cpu, cpu_runtime, period);
++	}
++}
++#endif
++
+ static struct task_struct *
+ tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
+ {
+@@ -10202,6 +10346,43 @@ static void free_virtual_rq(struct rq *vrq)
+ 	kfree(vrq);
+ }
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++static void __init init_root_tg_bandwidth_server(void)
++{
++	int cpu;
++
++	for_each_possible_cpu(cpu) {
++		struct sched_dl_entity *server;
++		struct rq *rq = cpu_rq(cpu);
++		struct rq *vrq;
++
++		if (root_task_group.tg_server[cpu])
++			continue;
++
++		if (!idle_task(cpu))
++			continue;
++
++		server = kzalloc_node(sizeof(*server), GFP_NOWAIT, cpu_to_node(cpu));
++		BUG_ON(!server);
++
++		vrq = alloc_virtual_rq(&root_task_group, cpu, rq);
++		BUG_ON(!vrq);
++
++		init_dl_entity(server);
++		server->dl_runtime = root_task_group.tg_bandwidth.dl_runtime;
++		server->dl_period = root_task_group.tg_bandwidth.dl_period;
++		server->dl_deadline = server->dl_period;
++		server->dl_bw = to_ratio(server->dl_period, server->dl_runtime);
++		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
++		server->flags = tg_server_sched_flags(&root_task_group);
++		server->dl_server = 1;
++
++		dl_server_init(server, rq, tg_bandwidth_server_pick_task);
++		init_tg_bandwidth_entry(&root_task_group, vrq, server, cpu, NULL);
++	}
++}
++#endif
++
+ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+ {
+ 	int cpu;
+@@ -10343,6 +10524,13 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+ 
+ 	cpumask_copy(tg->active_server_mask, active_mask);
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (tg == &root_task_group) {
++		tg_recalc_root_bandwidth();
++		goto out_free;
++	}
++#endif
++
+ 	runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+ 	period = READ_ONCE(tg->tg_bandwidth.dl_period);
+ 
+@@ -10352,6 +10540,11 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+ 		init_tg_dl_se(tg, cpu, cpu_runtime, period);
+ 	}
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (tg->parent == &root_task_group)
++		tg_recalc_root_bandwidth();
++#endif
++
+ out_free:
+ 	free_cpumask_var(active_mask);
+ 	return 0;
+@@ -10366,6 +10559,12 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+ 	int cpu;
+ 
+ 	if (tg == &root_task_group) {
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++		unsigned long limit = tg_root_dl_bandwidth_limit();
++#else
++		unsigned long limit = BW_UNIT;
++#endif
++
+ 		for_each_possible_cpu(cpu) {
+ 			unsigned long sum = 0;
+ 
+@@ -10376,7 +10575,7 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+ 					return -EINVAL;
+ 
+ 				sum += child_bw;
+-				if (sum > BW_UNIT)
++				if (sum > limit)
+ 					return -EINVAL;
+ 			}
+ 		}
+@@ -10476,6 +10675,11 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+ 		init_tg_dl_se(tg, cpu, cpu_runtime, period);
+ 	}
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (tg->parent == &root_task_group)
++		tg_recalc_root_bandwidth();
++#endif
++
+ 	return ret;
+ }
+ 
+@@ -10484,8 +10688,8 @@ int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim)
+ 	unsigned int sched_flags = reclaim ? SCHED_FLAG_RECLAIM : 0;
+ 	int cpu;
+ 
+-	if (tg == &root_task_group)
+-		return -EPERM;
++	if (tg == &root_task_group && !tg_uses_bandwidth_server(tg))
++		return -EOPNOTSUPP;
+ 
+ 	guard(mutex)(&tg_bandwidth_constraints_mutex);
+ 	WRITE_ONCE(tg->tg_bandwidth.dl_reclaim, reclaim);
+@@ -10633,6 +10837,11 @@ void sched_online_group(struct task_group *tg, struct task_group *parent)
+ 	spin_unlock_irqrestore(&task_group_lock, flags);
+ 
+ 	online_fair_sched_group(tg);
++
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (parent == &root_task_group)
++		tg_recalc_root_bandwidth();
++#endif
+ }
+ 
+ /* RCU callback to free various structures associated with a task group */
+@@ -10651,6 +10860,10 @@ void sched_destroy_group(struct task_group *tg)
+ void sched_release_group(struct task_group *tg)
+ {
+ 	unsigned long flags;
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	bool update_root = tg->parent == &root_task_group &&
++			   READ_ONCE(tg->tg_bandwidth.dl_runtime);
++#endif
+ 
+ 	/*
+ 	 * Unlink first, to avoid walk_tg_tree_from() from finding us (via
+@@ -10669,6 +10882,11 @@ void sched_release_group(struct task_group *tg)
+ 	list_del_rcu(&tg->list);
+ 	list_del_rcu(&tg->siblings);
+ 	spin_unlock_irqrestore(&task_group_lock, flags);
++
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (update_root)
++		tg_recalc_root_bandwidth();
++#endif
+ }
+ 
+ static void sched_change_group(struct task_struct *tsk)
+@@ -11815,6 +12033,24 @@ static struct cftype cpu_files[] = {
+ 		.read_s64 = cpu_tg_reclaim_read,
+ 		.write_s64 = cpu_tg_reclaim_write,
+ 	},
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	{
++		.name = "runtime_us",
++		.flags = CFTYPE_ONLY_ON_ROOT,
++		.read_s64 = cpu_tg_runtime_read,
++	},
++	{
++		.name = "period_us",
++		.flags = CFTYPE_ONLY_ON_ROOT,
++		.read_u64 = cpu_tg_period_read_uint,
++	},
++	{
++		.name = "reclaim",
++		.flags = CFTYPE_ONLY_ON_ROOT,
++		.read_s64 = cpu_tg_reclaim_read,
++		.write_s64 = cpu_tg_reclaim_write,
++	},
++#endif
+ #endif
+ #ifdef CONFIG_GROUP_SCHED_WEIGHT
+ 	{
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 01eb90533904..334ae4af35d3 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -551,7 +551,13 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+ 		rcu_read_unlock_sched();
+ 	}
+ 
+-	if (is_active_group)
++	if (is_active_group ||
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	    tg == &root_task_group
++#else
++	    false
++#endif
++	)
+ 		dl_rq_change_utilization(rq, dl_se, new_bw);
+ 
+ 	dl_se->dl_runtime = runtime;
+@@ -566,7 +572,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+ 	tg_server_update_dl_rq(dl_se);
+ 
+ 	parent = dl_se->parent;
+-	/* Root task group has no explicit server entry, skip parent bandwidth tweaks. */
++	/* Direct children of root stay top-level servers on the physical rq. */
+ 	if (tg->parent && tg->parent != &root_task_group && parent &&
+ 	    !sched_group_has_active_siblings(tg)) {
+ 		if (!runtime && old_runtime)
+@@ -575,7 +581,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+ 			__sub_rq_bw(parent->dl_bw, dl_rq);
+ 	}
+ 
+-	if (nr_task_running)
++	if (nr_task_running && runtime)
+ 		dl_server_start(dl_se);
+ 
+ 	raw_spin_rq_unlock_irq(rq);
+@@ -3390,6 +3396,17 @@ void dl_clear_root_domain(struct root_domain *rd)
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+ 	rcu_read_lock_sched();
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	for_each_cpu(i, rd->span) {
++		struct sched_dl_entity *dl_se = READ_ONCE(root_task_group.tg_server[i]);
++
++		if (!cpu_active(i) || !dl_se || !dl_server(dl_se) ||
++		    !dl_se->dl_runtime)
++			continue;
++
++		__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(i));
++	}
++#endif
+ 	list_for_each_entry_rcu(tg, &task_groups, list) {
+ 		if (tg == &root_task_group || !tg_uses_bandwidth_server(tg))
+ 			continue;
+@@ -3644,10 +3661,38 @@ int sched_dl_global_validate(void)
+ 		dl_b = dl_bw_of(cpu);
+ 		cpus = dl_bw_cpus(cpu);
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++		{
++			struct root_domain *rd = cpu_rq(cpu)->rd;
++			u64 root_bw = 0;
++			u64 non_root_bw;
++			int i;
++
++			if (root_task_group.tg_server) {
++				for_each_cpu(i, rd->span) {
++					struct sched_dl_entity *server;
++
++					server = READ_ONCE(root_task_group.tg_server[i]);
++					if (!cpu_active(i) || !server || !server->dl_runtime)
++						continue;
++
++					root_bw += server->dl_bw;
++				}
++			}
++
++			raw_spin_lock_irqsave(&dl_b->lock, flags);
++			non_root_bw = dl_b->total_bw > root_bw ?
++				dl_b->total_bw - root_bw : 0;
++			if (new_bw * cpus < non_root_bw)
++				ret = -EBUSY;
++			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
++		}
++#else
+ 		raw_spin_lock_irqsave(&dl_b->lock, flags);
+ 		if (new_bw * cpus < dl_b->total_bw)
+ 			ret = -EBUSY;
+ 		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
++#endif
+ 
+ next:
+ 		rcu_read_unlock_sched();
+@@ -3719,6 +3764,10 @@ void sched_dl_do_global(void)
+ 
+ 		rcu_read_unlock_sched();
+ 	}
++
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	tg_recalc_root_bandwidth();
++#endif
+ }
+ 
+ /*
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index d5a536893e3c..04372fdebb37 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -626,6 +626,9 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 		struct sched_dl_entity *parent);
+ extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
+ extern void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period);
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++extern void tg_recalc_root_bandwidth(void);
++#endif
+ extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
+ extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
+ extern long sched_group_tg_runtime(struct task_group *tg);
+@@ -643,7 +646,11 @@ static inline bool tg_uses_bandwidth_server(struct task_group *tg)
+ 	if (!tg || !tg->tg_server)
+ 		return false;
+ 
++#ifndef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+ 	return tg != &root_task_group;
++#endif
++
++	return true;
+ }
+ 
+ static inline const struct cpumask *tg_active_mask(struct task_group *tg)
+@@ -659,7 +666,7 @@ static inline bool tg_server_cpu_active(struct task_group *tg, int cpu)
+ 	return cpumask_test_cpu(cpu, tg_active_mask(tg));
+ }
+ 
+-static inline bool task_uses_tg_bandwidth_server(struct task_struct *p);
++extern bool task_uses_tg_bandwidth_server(struct task_struct *p);
+ #else
+ static inline void free_tg_bandwidth_server(struct task_group *tg) { }
+ static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
+@@ -667,6 +674,9 @@ static inline int tg_group_set_active_mask(struct task_group *tg,
+ 					   const struct cpumask *mask) { return 0; }
+ static inline int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim) { return -EOPNOTSUPP; }
+ static inline long sched_group_tg_reclaim(struct task_group *tg) { return 0; }
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++static inline void tg_recalc_root_bandwidth(void) { }
++#endif
+ #endif
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+@@ -2312,11 +2322,12 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+ #endif
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+-	if (!task_uses_tg_bandwidth_server(p)) {
++	if (!task_uses_tg_bandwidth_server(p) ||
++	    !tg->tg_server || !tg->tg_server[cpu]) {
+ 		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
+ 		p->rt.rt_rq = &cpu_rq(cpu)->rt;
+ 		p->dl.dl_rq = &cpu_rq(cpu)->dl;
+-	} else if (tg->tg_server) {
++	} else {
+ 		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
+ 		p->rt.rt_rq = &tg->tg_server[cpu]->vrq->rt;
+ 		p->dl.dl_rq = &tg->tg_server[cpu]->vrq->dl;
+@@ -2355,11 +2366,6 @@ static inline struct task_group *task_group(struct task_struct *p)
+ #endif /* !CONFIG_CGROUP_SCHED */
+ 
+ #ifdef CONFIG_TG_BANDWIDTH_SERVER
+-static inline bool task_uses_tg_bandwidth_server(struct task_struct *p)
+-{
+-	return tg_uses_bandwidth_server(task_group(p));
+-}
+-
+ static inline struct rq *tg_server_rq_of_task(struct rq *rq,
+ 					      struct task_struct *p)
+ {
+-- 
+2.43.0
+
