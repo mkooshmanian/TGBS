@@ -1,7 +1,7 @@
-From 262ab897b8b865f54ccda2a93e1e2415780f1069 Mon Sep 17 00:00:00 2001
+From e4c1471342e2bdff063a1956476e12f696b1bcf6 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:48:50 +0100
-Subject: [PATCH 26/27] sched/deadline: account TG servers in root-domain
+Subject: [PATCH 26/28] sched/deadline: account TG servers in root-domain
  bandwidth
 
 Track task-group bandwidth servers in rd->dl_bw.total_bw so root-domain and
@@ -16,10 +16,10 @@ bandwidth already admitted on each root domain.
  3 files changed, 77 insertions(+), 50 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 9373309ed404..ae6886f2c168 100644
+index 472423818a5e..a0cc0e6ea8e0 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9939,6 +9939,33 @@ tg_schedulable_bw(const struct tg_bandwidth_schedulable_data *d,
+@@ -9941,6 +9941,33 @@ tg_schedulable_bw(const struct tg_bandwidth_schedulable_data *d,
  				      tg_schedulable_mask(d, tg));
  }
  
@@ -53,7 +53,7 @@ index 9373309ed404..ae6886f2c168 100644
  static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
  {
  	unsigned long flags;
-@@ -9952,6 +9979,7 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
+@@ -9954,6 +9981,7 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
  		struct root_domain *rd;
  		struct dl_bw *dl_b;
  		u64 total_bw = 0;
@@ -61,7 +61,7 @@ index 9373309ed404..ae6886f2c168 100644
  		int cpus;
  		struct task_group *child;
  
-@@ -9979,10 +10007,12 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
+@@ -9981,10 +10009,12 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
  						    rd->span);
  			total_bw += (u64)child_bw * active;
  		}
@@ -75,7 +75,7 @@ index 9373309ed404..ae6886f2c168 100644
  			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
  			rcu_read_unlock_sched();
  			return 0;
-@@ -10010,38 +10040,6 @@ static bool tg_has_tasks(struct task_group *tg)
+@@ -10012,38 +10042,6 @@ static bool tg_has_tasks(struct task_group *tg)
  	return ret;
  }
  

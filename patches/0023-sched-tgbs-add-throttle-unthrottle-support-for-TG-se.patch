@@ -1,7 +1,7 @@
-From 73b0e4ea3f86a8f89a6da1bc2d2542590fc12c16 Mon Sep 17 00:00:00 2001
+From 59f8242e8e35ca4aab7133e7439bc634ef164de3 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 11 Dec 2025 17:06:19 +0100
-Subject: [PATCH 23/27] sched/tgbs: add throttle/unthrottle support for TG
+Subject: [PATCH 23/28] sched/tgbs: add throttle/unthrottle support for TG
  servers via irq_work
 
 Add the TG bandwidth server balancing logic: when a server throttles we push
@@ -36,7 +36,7 @@ index 25991138a647..ac2874f3dba1 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b259b5bd8d46..ff0f3765e0d3 100644
+index b365baa7452c..af6720a58017 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -39,6 +39,8 @@
@@ -333,7 +333,7 @@ index b259b5bd8d46..ff0f3765e0d3 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -2309,6 +2545,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2311,6 +2547,8 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	if (!READ_ONCE(vrq->nr_running)) {
  		bool was_active;
  
@@ -342,7 +342,7 @@ index b259b5bd8d46..ff0f3765e0d3 100644
  		if (tg_server_pull_task(tg, vrq))
  			return;
  
-@@ -2381,33 +2619,45 @@ void tg_server_account_runtime(struct rq *rq,
+@@ -2383,33 +2621,45 @@ void tg_server_account_runtime(struct rq *rq,
  void tg_server_handle_throttle(struct sched_dl_entity *server)
  {
  	struct rq *rq;
@@ -398,7 +398,7 @@ index b259b5bd8d46..ff0f3765e0d3 100644
  }
  #endif
  
-@@ -9260,6 +9510,8 @@ void __init sched_init(void)
+@@ -9262,6 +9512,8 @@ void __init sched_init(void)
  		rq->cfs.rq = rq;
  		rq->rt.rq = rq;
  		rq->dl.rq = rq;
@@ -407,7 +407,7 @@ index b259b5bd8d46..ff0f3765e0d3 100644
  #endif
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
-@@ -9772,6 +10024,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -9774,6 +10026,9 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
  	server->tg = tg;
  	server->vrq = vrq;
  	server->parent = parent;

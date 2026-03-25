@@ -1,7 +1,7 @@
 From fb2a072a0fc4b275690f8740a505b6a3e8845a18 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:45:40 +0100
-Subject: [PATCH 04/27] sched/core: expose task group bandwidth knobs via cpu 
+Subject: [PATCH 04/28] sched/core: expose task group bandwidth knobs via cpu 
  cgroup
 
 ---

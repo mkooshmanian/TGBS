@@ -1,7 +1,7 @@
-From d5747f16dc05fa20b54a3e35694d563ce6486f61 Mon Sep 17 00:00:00 2001
+From e43722ed65ba1421fbe6bd03184fe6a5d6568c06 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:46:39 +0100
-Subject: [PATCH 25/27] sched/tgbs: drive active TG server mask from cpuset
+Subject: [PATCH 25/28] sched/tgbs: drive active TG server mask from cpuset
  effective CPUs
 
 Use cpuset effective CPUs to derive the active TG bandwidth server mask of each task group and refresh it when the cgroup mask changes.
@@ -100,10 +100,10 @@ index 52468d2c178a..dd3d4de6932f 100644
  
  		/*
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 630b95ff9bfc..9373309ed404 100644
+index b1edd20fb8a6..472423818a5e 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9876,6 +9876,13 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
+@@ -9878,6 +9878,13 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  static u64 tg_bandwidth_visit_cookie;
  
@@ -117,7 +117,7 @@ index 630b95ff9bfc..9373309ed404 100644
  static bool tg_dl_bw_visited(struct root_domain *rd, u64 gen)
  {
  	if (READ_ONCE(rd->visit_cookie) == gen)
-@@ -9893,7 +9900,46 @@ static int tg_dl_bw_cpus(struct root_domain *rd)
+@@ -9895,7 +9902,46 @@ static int tg_dl_bw_cpus(struct root_domain *rd)
  	return cpumask_weight_and(rd->span, cpu_active_mask);
  }
  
@@ -165,7 +165,7 @@ index 630b95ff9bfc..9373309ed404 100644
  {
  	unsigned long flags;
  	int cpu;
-@@ -9905,7 +9951,9 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+@@ -9907,7 +9953,9 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
  		struct rq *rq;
  		struct root_domain *rd;
  		struct dl_bw *dl_b;
@@ -175,7 +175,7 @@ index 630b95ff9bfc..9373309ed404 100644
  
  		rcu_read_lock_sched();
  
-@@ -9918,10 +9966,23 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
+@@ -9920,10 +9968,23 @@ static int tg_check_root_dl_bandwidth(unsigned long total_bw)
  
  		dl_b = &rd->dl_bw;
  		cpus = tg_dl_bw_cpus(rd);
@@ -200,7 +200,7 @@ index 630b95ff9bfc..9373309ed404 100644
  			raw_spin_unlock_irqrestore(&dl_b->lock, flags);
  			rcu_read_unlock_sched();
  			return 0;
-@@ -9951,21 +10012,30 @@ static bool tg_has_tasks(struct task_group *tg)
+@@ -9953,21 +10014,30 @@ static bool tg_has_tasks(struct task_group *tg)
  
  unsigned long tg_root_bandwidth_sum(void)
  {
@@ -239,7 +239,7 @@ index 630b95ff9bfc..9373309ed404 100644
  	}
  	rcu_read_unlock();
  
-@@ -10280,40 +10350,31 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+@@ -10282,40 +10352,31 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  	return 0;
  }
  
@@ -293,7 +293,7 @@ index 630b95ff9bfc..9373309ed404 100644
  			return -EBUSY;
  
  		return 0;
-@@ -10335,27 +10396,24 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -10337,27 +10398,24 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  	    tg_has_tasks(tg))
  		return -EBUSY;
  
@@ -335,7 +335,7 @@ index 630b95ff9bfc..9373309ed404 100644
  	}
  
  	return 0;
-@@ -10367,6 +10425,7 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
+@@ -10369,6 +10427,7 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
  		.tg = tg,
  		.period = period,
  		.runtime = runtime,
@@ -343,7 +343,7 @@ index 630b95ff9bfc..9373309ed404 100644
  	};
  
  	guard(rcu)();
-@@ -10656,6 +10715,7 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -10658,6 +10717,7 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
  {
  	struct task_group *tg = css_tg(css);
  	struct task_group *parent = css_tg(css->parent);
@@ -351,7 +351,7 @@ index 630b95ff9bfc..9373309ed404 100644
  	int ret;
  
  	ret = scx_tg_online(tg);
-@@ -10672,9 +10732,30 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -10674,9 +10734,30 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
  	cpu_util_update_eff(css);
  #endif
  

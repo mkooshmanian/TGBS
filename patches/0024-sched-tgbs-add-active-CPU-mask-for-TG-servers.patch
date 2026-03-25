@@ -1,7 +1,7 @@
-From d9e4b84f77fff5bb4d44e1d6181f764537c2ef39 Mon Sep 17 00:00:00 2001
+From f5f33b2491e55b4265f0c09cbb2dd5529e777cb1 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:40:15 +0100
-Subject: [PATCH 24/27] sched/tgbs: add active CPU mask for TG servers
+Subject: [PATCH 24/28] sched/tgbs: add active CPU mask for TG servers
 
 Track a per-task-group mask of CPUs where TG bandwidth servers are active.
 
@@ -12,10 +12,10 @@ Initialize it from the parent mask, keep the root mask at all CPUs, and apply it
  2 files changed, 66 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index ff0f3765e0d3..630b95ff9bfc 100644
+index af6720a58017..b1edd20fb8a6 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -9477,6 +9477,9 @@ void __init sched_init(void)
+@@ -9479,6 +9479,9 @@ void __init sched_init(void)
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  	/* Initialize root bandwidth with a zero runtime and a fixed period. */
  	init_tg_bandwidth(&root_task_group.tg_bandwidth, 1 * NSEC_PER_SEC, 0);
@@ -25,7 +25,7 @@ index ff0f3765e0d3..630b95ff9bfc 100644
  #endif
  
  #ifdef CONFIG_RT_GROUP_SCHED
-@@ -10131,8 +10134,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -10133,8 +10136,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  	if (!tg->tg_server)
  		return -ENOMEM;
  
@@ -39,7 +39,7 @@ index ff0f3765e0d3..630b95ff9bfc 100644
  
  	for_each_possible_cpu(cpu) {
  		struct sched_dl_entity *server;
-@@ -10181,6 +10188,13 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -10183,6 +10190,13 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  	}
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
@@ -53,7 +53,7 @@ index ff0f3765e0d3..630b95ff9bfc 100644
  
  	return 0;
  }
-@@ -10223,10 +10237,49 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -10225,10 +10239,49 @@ void free_tg_bandwidth_server(struct task_group *tg)
  
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
@@ -103,7 +103,7 @@ index ff0f3765e0d3..630b95ff9bfc 100644
  struct tg_bandwidth_schedulable_data {
  	struct task_group *tg;
  	u64 period;
-@@ -10352,7 +10405,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -10354,7 +10407,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  		return 0;
  
  	for_each_possible_cpu(cpu) {

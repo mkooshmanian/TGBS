@@ -1,7 +1,7 @@
-From b30ee848a14ac197757fab2b141614efb2858874 Mon Sep 17 00:00:00 2001
+From f88e25dda4f4d4349907fae8bdc326e6e22156bf Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:26:22 +0100
-Subject: [PATCH 13/27] sched/tg_server: start/stop/update TG dl server and
+Subject: [PATCH 13/28] sched/tg_server: start/stop/update TG dl server and
  keep nr_running alive
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -12,17 +12,17 @@ stop it when the last runnable task departs. Account runtime from update_se()
 to keep the server in sync. Count TG servers in nr_running so NO_HZ doesn’t
 stop the tick while a server runs on the physical rq.
 ---
- kernel/sched/core.c     | 118 +++++++++++++++++++++++++++++++++++++++-
+ kernel/sched/core.c     | 120 +++++++++++++++++++++++++++++++++++++++-
  kernel/sched/deadline.c |  24 ++++++--
  kernel/sched/fair.c     |   4 ++
  kernel/sched/sched.h    |   3 +
- 4 files changed, 143 insertions(+), 6 deletions(-)
+ 4 files changed, 145 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 06843c90a67b..7cd2902034e6 100644
+index 06843c90a67b..97028a52e616 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
-@@ -2162,8 +2162,92 @@ unsigned long get_wchan(struct task_struct *p)
+@@ -2162,8 +2162,94 @@ unsigned long get_wchan(struct task_struct *p)
  	return ip;
  }
  
@@ -49,6 +49,8 @@ index 06843c90a67b..7cd2902034e6 100644
 +		return;
 +
 +	BUG_ON(vrq != server->vrq);
++	if (!server->dl_runtime)
++		return;
 +
 +	if (READ_ONCE(vrq->nr_running) == 1)
 +		dl_server_start(server);
@@ -115,7 +117,7 @@ index 06843c90a67b..7cd2902034e6 100644
  	if (!(flags & ENQUEUE_NOCLOCK))
  		update_rq_clock(rq);
  
-@@ -2174,7 +2258,7 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
+@@ -2174,7 +2260,7 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
  	 */
  	uclamp_rq_inc(rq, p, flags);
  
@@ -124,7 +126,7 @@ index 06843c90a67b..7cd2902034e6 100644
  
  	psi_enqueue(p, flags);
  
-@@ -2183,6 +2267,13 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
+@@ -2183,6 +2269,13 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
  
  	if (sched_core_enabled(rq))
  		sched_core_enqueue(rq, p);
@@ -138,7 +140,7 @@ index 06843c90a67b..7cd2902034e6 100644
  }
  
  /*
-@@ -2190,6 +2281,18 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
+@@ -2190,6 +2283,18 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
   */
  inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
  {
@@ -157,7 +159,7 @@ index 06843c90a67b..7cd2902034e6 100644
  	if (sched_core_enabled(rq))
  		sched_core_dequeue(rq, p, flags);
  
-@@ -2206,7 +2309,18 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
+@@ -2206,7 +2311,18 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
  	 * and mark the task ->sched_delayed.
  	 */
  	uclamp_rq_dec(rq, p);

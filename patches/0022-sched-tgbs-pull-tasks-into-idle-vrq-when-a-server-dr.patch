@@ -1,7 +1,7 @@
-From 2d4efc8ca97132bfaad6d9aaa4892e24ec73b22e Mon Sep 17 00:00:00 2001
+From 9d98ad4986327396d34ee43643f456992a8c4f82 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:24:31 +0100
-Subject: [PATCH 22/27] sched/tgbs: pull tasks into idle vrq when a server
+Subject: [PATCH 22/28] sched/tgbs: pull tasks into idle vrq when a server
  drains
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ whenever migrable work exists elsewhere in the task group.
  5 files changed, 176 insertions(+), 1 deletion(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 73baabf97d97..b259b5bd8d46 100644
+index 3390e722e3b2..b365baa7452c 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2163,6 +2163,9 @@ unsigned long get_wchan(struct task_struct *p)
@@ -113,7 +113,7 @@ index 73baabf97d97..b259b5bd8d46 100644
  void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
  {
  	struct task_group *tg = task_group(p);
-@@ -2234,7 +2307,12 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2236,7 +2309,12 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	BUG_ON(vrq != server->vrq);
  
  	if (!READ_ONCE(vrq->nr_running)) {
@@ -127,7 +127,7 @@ index 73baabf97d97..b259b5bd8d46 100644
  
  		dl_server_stop(server);
  		if (was_active && !dl_server_active(server))
-@@ -2245,6 +2323,31 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
+@@ -2247,6 +2325,31 @@ void tg_server_dequeue(struct rq *vrq, struct task_struct *p)
  	}
  }
  
