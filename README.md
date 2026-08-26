@@ -2,39 +2,46 @@
 
 ## Overview
 
-This repository contains a Linux kernel patch named **Task Group Bandwidth Server (TGBS)**.
+This repository contains **Task Group Bandwidth Server (TGBS)**, a Linux kernel scheduler extension designed to provide **temporal isolation between task groups** (CPU cgroups).
 
-TGBS extends the Linux scheduler to provide **temporal isolation between task groups** by associating each task group (CPU cgroup) with a **deadline server**. Each server is a **deadline scheduling entity** and follows the **SCHED_DEADLINE** policy.
+TGBS associates each task group with a **CBS-based deadline server** integrated into the Linux `SCHED_DEADLINE` infrastructure. The server enforces a runtime/period reservation for the group while allowing tasks scheduled with different native Linux scheduling classes to coexist within the same isolated group.
 
-The objective is to enable **container-level temporal isolation** while supporting **mixed scheduling classes** inside each container.
+The main objective is to provide **container-level temporal isolation** together with **multi-policy hierarchical scheduling**.
 
-The default branch (`main`) is documentation-only. The Linux kernel source tree is provided in `master` (upstream reference) and in `tgbs` (kernel tree with TGBS applied). A patch-series form is available in `tgbs-patches`.
+The default branch (`main`) contains project documentation and metadata only. The Linux kernel source tree is provided through `master` as the upstream reference and `tgbs` as the current kernel tree with TGBS applied. Release-oriented patch artifacts are maintained in `tgbs-patches`.
 
 ## Motivation and Design
 
-Linux control groups allow grouping tasks into containers, but existing CPU controllers provide limited and hard-to-analyze temporal guarantees.
+Linux control groups provide a way to organize tasks into groups and containers, but the standard CPU controllers do not directly provide the hierarchical temporal isolation model targeted by TGBS.
 
-TGBS addresses this limitation by associating each task group with a **budget (Q) and period (P)** and scheduling it as a **SCHED_DEADLINE server**. Temporal isolation between groups is enforced by the **CBS/GRUB semantics** of the deadline scheduling policy.
+TGBS associates each task group with a **runtime budget `Q`** and a **period `P`**. Execution of the group is controlled by a deadline server using CBS-style bandwidth accounting.
 
-This is achieved by:
-- creating a **full virtual runqueue** per task group,
-- allowing `FAIR`, `RT`, and `DEADLINE` tasks to coexist inside the same container,
-- accounting all execution against the group reservation.
+The implementation provides:
 
-As a result, TGBS enables **multi-policy hierarchical scheduling** at the container level.
+* a **full virtual runqueue** for each TGBS-managed task group;
+* support for `FAIR`, `RT`, and `DEADLINE` tasks within the same isolated group;
+* common runtime accounting against the task-group reservation;
+* hierarchical bandwidth admission control;
+* multicore placement and balancing of TGBS virtual runqueues;
+* cpuset-aware server activation and task placement;
+* optional runtime reclaim through the Linux GRUB mechanism;
+* optional temporal isolation of workloads running in the root CPU cgroup.
+
+Scheduling inside a TGBS group continues to rely on the native Linux scheduling classes. TGBS therefore isolates bandwidth at the task-group level without requiring one container per scheduling policy.
 
 ## Relation to Previous Work
 
-TGBS builds directly on the HCBS work originally proposed by **Luca Abeni**
-and later updated by **Yuri Andriaccio**. The design of TGBS originates
-from the idea of generalizing HCBS beyond real-time workloads to support
-multiple scheduling policies. Parts of the implementation reuse and
-extend code from the HCBS patches, with appropriate attribution.
+TGBS builds on the **Hierarchical Constant Bandwidth Server (HCBS)** work originally proposed by **Luca Abeni** and later updated by **Yuri Andriaccio** and collaborators.
 
-Key differences include:
-- HCBS applies only to RT workloads.
-- TGBS supports **multi-class workloads** inside a single container.
-- TGBS virtualizes a full runqueue instead of attaching a server to the RT sub-runqueue only.
+The TGBS design originates from the idea of extending hierarchical bandwidth-server scheduling beyond RT-only workloads in order to support multiple native Linux scheduling classes within the same task group.
+
+Parts of the implementation reuse and extend code from the HCBS patches, with attribution preserved in the corresponding patch history.
+
+The main differences include:
+
+* HCBS targets real-time workloads;
+* TGBS supports mixed `FAIR`, `RT`, and `DEADLINE` workloads in the same task group;
+* TGBS virtualizes a full runqueue rather than attaching a server only to the RT sub-runqueue.
 
 References:
 - HCBS (original): https://github.com/lucabe72/LinuxPatches/tree/HCBS
@@ -42,54 +49,106 @@ References:
 
 ## Scientific Publications
 
-This work is conducted in the context of a PhD thesis.
+TGBS is developed in the context of a PhD thesis.
 
-The following publication describes the design, analysis, and implementation of TGBS:
+The following publication presents the design, analysis, and implementation of TGBS:
 
-- **Towards Multi-Policy Hierarchical Scheduling in Linux for Containerized Space Applications**
-  *M. Kooshmanian, J. Ermont, L. Miné, S. Corbin, F. Boniol*
-  European Congress on Embedded Real-Time Systems (ECRTS), 2026
-  doi: 10.82331/ERTS.2026.34
+**Towards Multi-Policy Hierarchical Scheduling in Linux for Containerized Space Applications**
+*M. Kooshmanian, J. Ermont, L. Miné, S. Corbin, F. Boniol*
+Embedded Real Time Systems Conference (ERTS), 2026
+DOI: `10.82331/ERTS.2026.34`
 
 ## Repository Organization
 
 ### Branches
 
-- `main`
-  Documentation only (this README and related material).
+* `main`
+  Project documentation, citation metadata, licensing information, and references.
 
-- `master`
+* `master`
   Linux mainline kernel used as the upstream reference.
 
-- `tgbs`
-  Linux kernel tree with the latest version of the TGBS patch applied.
+* `tgbs`
+  Current Linux kernel tree with TGBS applied.
 
-- `tgbs-patches`
-  Same content as `tgbs`, exported as a series of standalone patches.
+* `tgbs-patches`
+  Release-oriented TGBS patch artifacts. Each tagged snapshot contains the ordered patch series together with its README, citation metadata, license, and release notes.
+
+Development branches may exist temporarily and are not part of the stable repository interface.
 
 ### Tags
 
-For each released version `X.Y` of TGBS, two tags are provided:
+Two tag namespaces are used.
 
-- `tgbs-vX.Y`
-  References the kernel tree containing the TGBS implementation
-  (based on `tgbs`, possibly rebased).
+#### Kernel-tree tags
 
-- `tgbs-vX.Y-patches`
-  References the corresponding patch series
-  (based on `tgbs-patches`).
+```text
+tgbs-vX.Y
+```
 
-Tags suffixed with `-patches` are intended for patch-based workflows.
+These tags identify historical snapshots of the Linux kernel tree containing a particular TGBS version.
+
+Examples:
+
+```text
+tgbs-v1.0
+```
+
+These tags are historical references. Because the development branch may be rebased or otherwise rewritten during development, a kernel-tree tag is not necessarily an ancestor of the current `tgbs` branch.
+
+#### Patch artifact tags
+
+```text
+patch/tgbs-vX.Y-kA.B
+```
+
+These tags identify the standalone TGBS patch artifact for TGBS version `X.Y` targeting Linux kernel version `A.B`.
+
+Examples:
+
+```text
+patch/tgbs-v1.0-k6.17
+```
+
+Patch artifact tags are used to create GitHub Releases and are archived through Zenodo.
+
+## Releases
+
+Each GitHub Release corresponds to a specific TGBS patch artifact and Linux kernel base.
+
+Current released artifacts include:
+
+| TGBS version | Linux kernel base | Patch artifact tag      |
+| ------------ | ----------------- | ----------------------- |
+| v1.0         | v6.17             | `patch/tgbs-v1.0-k6.17` |
+| v1.1         | v6.17             | `patch/tgbs-v1.1-k6.17` |
+| v1.1         | v6.18             | `patch/tgbs-v1.1-k6.18` |
+| v1.2         | v6.18             | `patch/tgbs-v1.2-k6.18` |
+| v1.3         | v6.18             | `patch/tgbs-v1.3-k6.18` |
+| v1.4         | v6.18             | `patch/tgbs-v1.4-k6.18` |
+
+A release archive contains the patch series and the metadata needed to understand and cite the corresponding artifact.
+
+## Citation
+
+Citation metadata for the project is provided in [`CITATION.cff`](CITATION.cff).
+
+The Zenodo DOI representing **all released versions of TGBS** is:
+
+**https://doi.org/10.5281/zenodo.22108568**
+
+This DOI resolves to the latest archived version.
+
+For reproducibility, when referring to experiments performed with a specific TGBS release, citing the DOI corresponding to that exact archived release is recommended.
 
 ## License
 
-TGBS is distributed under the **same license as the Linux kernel**.
+TGBS is distributed under the **GNU General Public License version 2 only** (`GPL-2.0-only`).
 
-Please refer to the license information provided in the `master` branch of this repository and in the upstream Linux kernel sources.
+See [`LICENSE`](LICENSE) for the full license text.
 
 ## Use of Generative AI Tools
 
-Generative AI tools were used during the development of this work as
-assistance for code exploration, refactoring, and documentation.
-All design decisions, implementations, and validations were performed
-by the author.
+Generative AI tools were used as assistance for code exploration, refactoring, and documentation.
+
+All design decisions, implementation choices, and validation remain the responsibility of the author.
