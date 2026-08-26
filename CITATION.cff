@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: >
+  If you use TGBS in your research, please cite the software using the
+  metadata below. For reproducibility, consider citing the DOI of the
+  specific TGBS release used in your work.
+
+title: "Task Group Bandwidth Server (TGBS)"
+type: software
+
+authors:
+  - family-names: "Kooshmanian"
+    given-names: "Merlin"
+    orcid: "https://orcid.org/0009-0007-7771-3585"
+
+abstract: >
+  Task Group Bandwidth Server (TGBS) is a Linux kernel scheduler extension
+  providing temporal isolation for CPU cgroups through hierarchical
+  deadline-server scheduling. TGBS allows workloads using different native
+  Linux scheduling classes to coexist within the same bandwidth-isolated
+  task group.
+
+repository-code: "https://github.com/mkooshmanian/TGBS"
+url: "https://github.com/mkooshmanian/TGBS"
+
+doi: "10.5281/zenodo.22108568"
+
+license: "GPL-2.0-only"
+
+keywords:
+  - Linux kernel
+  - scheduling
+  - real-time systems
+  - temporal isolation
+  - hierarchical scheduling
+  - CPU cgroups
+  - containers
+  - SCHED_DEADLINE
