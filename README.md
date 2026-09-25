@@ -58,6 +58,11 @@ The following publication presents the design, analysis, and implementation of T
 Embedded Real Time Systems Conference (ERTS), 2026
 DOI: `10.82331/ERTS.2026.34`
 
+**Supporting Heterogeneous Space Applications on Linux through Container-Level Temporal Isolation**
+*M. Kooshmanian, J. Ermont, L. Miné, S. Corbin, F. Boniol*
+Ecole d'été Temps Réel (ETR), 2026
+HAL-Id: `hal-05754354`
+
 ## Repository Organization
 
 ### Branches
