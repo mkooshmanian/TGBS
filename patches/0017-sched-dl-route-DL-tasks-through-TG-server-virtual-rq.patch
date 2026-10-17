@@ -1,4 +1,4 @@
-From e15d13f3ae3611a8aae57b9f391ffc0ac0d6e97a Mon Sep 17 00:00:00 2001
+From 76351fdd8d396eba2870095c30938743cdd17efb Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 16:50:53 +0100
 Subject: [PATCH 17/28] sched/dl: route DL tasks through TG server virtual rq
@@ -48,7 +48,7 @@ index 3f9845519196..25991138a647 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 413e945d98ca..84a07b6efd7f 100644
+index 4216ed725eec..d78d1fa3d5bc 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9048,6 +9048,7 @@ void __init sched_init(void)
@@ -70,15 +70,15 @@ index 413e945d98ca..84a07b6efd7f 100644
  	p = tg_server_pick_rt_task(vrq);
  	if (p)
  		goto out;
-@@ -9546,6 +9551,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
- 	tg->tg_server[cpu] = server;
+@@ -9545,6 +9550,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 	server->parent = parent;
  	vrq->cfs.rq = vrq;
  	vrq->rt.rq = vrq;
 +	vrq->dl.rq = vrq;
+ 	tg->tg_server[cpu] = server;
  }
  
- void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
-@@ -10042,7 +10048,7 @@ static void sched_change_group(struct task_struct *tsk)
+@@ -10043,7 +10049,7 @@ static void sched_change_group(struct task_struct *tsk)
  	tg = autogroup_task_group(tsk, tg);
  	tsk->sched_task_group = tg;
  
@@ -88,7 +88,7 @@ index 413e945d98ca..84a07b6efd7f 100644
  		tsk->sched_class->task_change_group(tsk);
  	else
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index d48e7558d269..e7b9b82f722d 100644
+index 8d9bfe088459..e5033ce94fd3 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -62,6 +62,47 @@ static bool dl_server(struct sched_dl_entity *dl_se)
@@ -243,7 +243,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	parent = dl_se->parent;
  	/* Root task group has no explicit server entry, skip parent bandwidth tweaks. */
  	if (tg->parent && tg->parent != &root_task_group && parent &&
-@@ -1344,6 +1461,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
+@@ -1349,6 +1466,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
  	struct task_struct *p;
  	struct rq_flags rf;
  	struct rq *rq;
@@ -251,7 +251,7 @@ index d48e7558d269..e7b9b82f722d 100644
  
  	if (dl_server(dl_se))
  		return dl_server_timer(timer, dl_se);
-@@ -1411,7 +1529,26 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
+@@ -1416,7 +1534,26 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
  		 */
  	}
  
@@ -279,7 +279,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	if (dl_task(rq->donor))
  		wakeup_preempt_dl(rq, p, 0);
  	else
-@@ -1730,6 +1867,9 @@ void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
+@@ -1735,6 +1872,9 @@ void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
  		    dl_server_pick_f pick_task)
  {
  	dl_se->rq = rq;
@@ -289,7 +289,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	dl_se->server_pick_task = pick_task;
  }
  
-@@ -1847,6 +1987,12 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+@@ -1852,6 +1992,12 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
  	struct sched_dl_entity *dl_se = container_of(timer,
  						     struct sched_dl_entity,
  						     inactive_timer);
@@ -302,7 +302,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	struct task_struct *p = NULL;
  	struct rq_flags rf;
  	struct rq *rq;
-@@ -1865,12 +2011,24 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+@@ -1870,12 +2016,24 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
  	if (dl_server(dl_se))
  		goto no_task;
  
@@ -329,7 +329,7 @@ index d48e7558d269..e7b9b82f722d 100644
  			dl_se->dl_non_contending = 0;
  		}
  
-@@ -1886,9 +2044,13 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+@@ -1891,9 +2049,13 @@ no_task:
  	if (dl_se->dl_non_contending == 0)
  		goto unlock;
  
@@ -344,7 +344,7 @@ index d48e7558d269..e7b9b82f722d 100644
  
  	if (!dl_server(dl_se)) {
  		task_rq_unlock(rq, p, &rf);
-@@ -2108,6 +2270,12 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
+@@ -2113,6 +2275,12 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
  		add_rq_bw(dl_se, dl_rq);
  		add_running_bw(dl_se, dl_rq);
  	}
@@ -357,7 +357,7 @@ index d48e7558d269..e7b9b82f722d 100644
  
  	/*
  	 * If p is throttled, we do not enqueue it. In fact, if it exhausted
-@@ -2170,7 +2338,7 @@ static void dequeue_dl_entity(struct sched_dl_entity *dl_se, int flags)
+@@ -2175,7 +2343,7 @@ static void dequeue_dl_entity(struct sched_dl_entity *dl_se, int flags)
  {
  	__dequeue_dl_entity(dl_se);
  
@@ -366,7 +366,7 @@ index d48e7558d269..e7b9b82f722d 100644
  		struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
  
  		sub_running_bw(dl_se, dl_rq);
-@@ -2358,6 +2526,12 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
+@@ -2363,6 +2531,12 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
  {
  	struct rq_flags rf;
  	struct rq *rq;
@@ -379,7 +379,7 @@ index d48e7558d269..e7b9b82f722d 100644
  
  	if (READ_ONCE(p->__state) != TASK_WAKING)
  		return;
-@@ -2369,9 +2543,17 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
+@@ -2374,9 +2548,17 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
  	 * rq->lock is not... So, lock it
  	 */
  	rq_lock(rq, &rf);
@@ -398,7 +398,7 @@ index d48e7558d269..e7b9b82f722d 100644
  		p->dl.dl_non_contending = 0;
  		/*
  		 * If the timer handler is currently running and the
-@@ -2382,7 +2564,11 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
+@@ -2387,7 +2569,11 @@ static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused
  		 */
  		cancel_inactive_timer(&p->dl);
  	}
@@ -411,7 +411,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	rq_unlock(rq, &rf);
  }
  
-@@ -2526,6 +2712,13 @@ static struct task_struct *pick_task_dl(struct rq *rq)
+@@ -2531,6 +2717,13 @@ static struct task_struct *pick_task_dl(struct rq *rq)
  	return __pick_task_dl(rq);
  }
  
@@ -425,7 +425,7 @@ index d48e7558d269..e7b9b82f722d 100644
  static void put_prev_task_dl(struct rq *rq, struct task_struct *p, struct task_struct *next)
  {
  	struct sched_dl_entity *dl_se = &p->dl;
-@@ -3127,9 +3320,26 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
+@@ -3132,9 +3325,26 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
  		 * some other class. We need to remove its contribution from
  		 * this rq running_bw now, or sub_rq_bw (below) will complain.
  		 */
@@ -454,7 +454,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	}
  
  	/*
-@@ -3167,7 +3377,24 @@ static void switched_to_dl(struct rq *rq, struct task_struct *p)
+@@ -3172,7 +3382,24 @@ static void switched_to_dl(struct rq *rq, struct task_struct *p)
  
  	/* If p is not queued we will update its parameters at next wakeup. */
  	if (!task_on_rq_queued(p)) {
@@ -480,7 +480,7 @@ index d48e7558d269..e7b9b82f722d 100644
  
  		return;
  	}
-@@ -3255,6 +3482,9 @@ DEFINE_SCHED_CLASS(dl) = {
+@@ -3260,6 +3487,9 @@ DEFINE_SCHED_CLASS(dl) = {
  	.task_tick		= task_tick_dl,
  	.task_fork              = task_fork_dl,
  
@@ -490,7 +490,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	.prio_changed           = prio_changed_dl,
  	.switched_from		= switched_from_dl,
  	.switched_to		= switched_to_dl,
-@@ -3319,6 +3549,17 @@ int sched_dl_global_validate(void)
+@@ -3324,6 +3554,17 @@ next:
  
  static void init_dl_rq_bw_ratio(struct dl_rq *dl_rq)
  {
@@ -508,7 +508,7 @@ index d48e7558d269..e7b9b82f722d 100644
  	if (global_rt_runtime() == RUNTIME_INF) {
  		dl_rq->bw_ratio = 1 << RATIO_SHIFT;
  		dl_rq->max_bw = dl_rq->extra_bw = 1 << BW_SHIFT;
-@@ -3549,6 +3790,9 @@ void init_dl_entity(struct sched_dl_entity *dl_se)
+@@ -3554,6 +3795,9 @@ void init_dl_entity(struct sched_dl_entity *dl_se)
  	init_dl_task_timer(dl_se);
  	init_dl_inactive_task_timer(dl_se);
  	__dl_clear_params(dl_se);

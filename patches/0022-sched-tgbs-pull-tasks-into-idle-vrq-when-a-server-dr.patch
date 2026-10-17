@@ -1,4 +1,4 @@
-From 9d98ad4986327396d34ee43643f456992a8c4f82 Mon Sep 17 00:00:00 2001
+From 39ca4d4643852ea89a14d35a225132fe8ef2cbb1 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:24:31 +0100
 Subject: [PATCH 22/28] sched/tgbs: pull tasks into idle vrq when a server
@@ -23,7 +23,7 @@ whenever migrable work exists elsewhere in the task group.
  5 files changed, 176 insertions(+), 1 deletion(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 3390e722e3b2..b365baa7452c 100644
+index b0f20762bfb4..7c9189f93e22 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2163,6 +2163,9 @@ unsigned long get_wchan(struct task_struct *p)
@@ -160,10 +160,10 @@ index 3390e722e3b2..b365baa7452c 100644
  					     struct task_struct *p,
  					     s64 delta_exec)
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 915a0d5e4b96..0609599c563c 100644
+index 7e4f1f0ecfad..8105c218dab5 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -2768,6 +2768,35 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
+@@ -2773,6 +2773,35 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
  
  	return have_best ? best_cpu : cpu;
  }

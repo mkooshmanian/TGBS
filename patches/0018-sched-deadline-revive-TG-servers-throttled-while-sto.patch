@@ -1,4 +1,4 @@
-From 10df60e1507211529ec627d17a7d341a069e2397 Mon Sep 17 00:00:00 2001
+From 48b04a5455e921d4055efccce281707abd9aefe2 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 30 Nov 2025 14:13:23 +0100
 Subject: [PATCH 18/28] sched/deadline: revive TG servers throttled while
@@ -14,10 +14,10 @@ unthrottle deadlock observed in TG bandwidth servers.
  1 file changed, 6 insertions(+)
 
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index e7b9b82f722d..1f4acbb06335 100644
+index e5033ce94fd3..e5332ff9f8c7 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -1409,6 +1409,12 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_
+@@ -1414,6 +1414,12 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_
  		if (!dl_se->dl_runtime)
  			return HRTIMER_NORESTART;
  

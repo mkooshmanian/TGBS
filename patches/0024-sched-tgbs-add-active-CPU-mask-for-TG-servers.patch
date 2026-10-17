@@ -1,4 +1,4 @@
-From f5f33b2491e55b4265f0c09cbb2dd5529e777cb1 Mon Sep 17 00:00:00 2001
+From 95dd02fedb4e4bc470806ecab2e64f614542e131 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:40:15 +0100
 Subject: [PATCH 24/28] sched/tgbs: add active CPU mask for TG servers
@@ -12,7 +12,7 @@ Initialize it from the parent mask, keep the root mask at all CPUs, and apply it
  2 files changed, 66 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index af6720a58017..b1edd20fb8a6 100644
+index 1d8910709408..f6a358d3adee 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9479,6 +9479,9 @@ void __init sched_init(void)
@@ -25,7 +25,7 @@ index af6720a58017..b1edd20fb8a6 100644
  #endif
  
  #ifdef CONFIG_RT_GROUP_SCHED
-@@ -10133,8 +10136,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -10134,8 +10137,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  	if (!tg->tg_server)
  		return -ENOMEM;
  
@@ -39,7 +39,7 @@ index af6720a58017..b1edd20fb8a6 100644
  
  	for_each_possible_cpu(cpu) {
  		struct sched_dl_entity *server;
-@@ -10183,6 +10190,13 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -10184,6 +10191,13 @@ err_free:
  	}
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
@@ -53,7 +53,7 @@ index af6720a58017..b1edd20fb8a6 100644
  
  	return 0;
  }
-@@ -10225,10 +10239,49 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -10226,10 +10240,49 @@ void free_tg_bandwidth_server(struct task_group *tg)
  
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
@@ -103,7 +103,7 @@ index af6720a58017..b1edd20fb8a6 100644
  struct tg_bandwidth_schedulable_data {
  	struct task_group *tg;
  	u64 period;
-@@ -10354,7 +10407,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -10355,7 +10408,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  		return 0;
  
  	for_each_possible_cpu(cpu) {

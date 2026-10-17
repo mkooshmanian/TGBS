@@ -1,4 +1,4 @@
-From 317f1ba84a6ccb89a5a620eb1fcde7288514ba8c Mon Sep 17 00:00:00 2001
+From bde15213c5fb69d6e20299182e5231c75db0235a Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:55:56 +0100
 Subject: [PATCH 16/28] sched/rt: route RT tasks through TG server virtual rq
@@ -40,7 +40,7 @@ index 284fc0eb0570..3f9845519196 100644
  	struct rt_rq			*my_q;
  #endif
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 12d8c1c35f5f..413e945d98ca 100644
+index 16fac772e1ad..4216ed725eec 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9047,6 +9047,7 @@ void __init sched_init(void)
@@ -62,14 +62,14 @@ index 12d8c1c35f5f..413e945d98ca 100644
  	p = tg_server_pick_fair_task(vrq);
  
  out:
-@@ -9540,6 +9545,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -9539,6 +9544,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 	server->vrq = vrq;
  	server->parent = parent;
- 	tg->tg_server[cpu] = server;
  	vrq->cfs.rq = vrq;
 +	vrq->rt.rq = vrq;
+ 	tg->tg_server[cpu] = server;
  }
  
- void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
 index 7936d4333731..d6bca40acf22 100644
 --- a/kernel/sched/rt.c
@@ -83,7 +83,7 @@ index 7936d4333731..d6bca40acf22 100644
  
  static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
  
-@@ -292,7 +292,55 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
+@@ -292,7 +292,55 @@ err:
  	return 0;
  }
  

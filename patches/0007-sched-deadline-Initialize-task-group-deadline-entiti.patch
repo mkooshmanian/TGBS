@@ -1,4 +1,4 @@
-From 820ebb46311f832a121be0bee9b303506570c8df Mon Sep 17 00:00:00 2001
+From c1b138e9014518d03dd22a8cafecf14e2cd49016 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Tue, 4 Nov 2025 11:13:32 +0100
 Subject: [PATCH 07/28] sched/deadline: Initialize task-group deadline entities
@@ -20,10 +20,10 @@ Co-developed-by: Alessio Balsini a.balsini@sssup.it
 Co-developed-by: Andrea Parri parri.andrea@gmail.com
 Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
 ---
- kernel/sched/core.c     | 29 ++++++++++++-
- kernel/sched/deadline.c | 96 +++++++++++++++++++++++++++++++++++++++++
+ kernel/sched/core.c     | 29 +++++++++++-
+ kernel/sched/deadline.c | 97 +++++++++++++++++++++++++++++++++++++++++
  kernel/sched/sched.h    |  2 +
- 3 files changed, 125 insertions(+), 2 deletions(-)
+ 3 files changed, 126 insertions(+), 2 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
 index e1f8bc7f7c02..9b694085d449 100644
@@ -38,7 +38,7 @@ index e1f8bc7f7c02..9b694085d449 100644
  {
  	struct css_task_iter it;
  	struct task_struct *task;
-@@ -9268,11 +9268,29 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -9268,11 +9268,29 @@ err_free:
  void free_tg_bandwidth_server(struct task_group *tg)
  {
  	int cpu;
@@ -92,10 +92,10 @@ index e1f8bc7f7c02..9b694085d449 100644
  }
  
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 05878bb5861d..d79353dea85b 100644
+index 05878bb5861d..b3c30151234d 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -355,6 +355,102 @@ static void dl_change_utilization(struct task_struct *p, u64 new_bw)
+@@ -355,6 +355,103 @@ static void dl_change_utilization(struct task_struct *p, u64 new_bw)
  	dl_rq_change_utilization(task_rq(p), &p->dl, new_bw);
  }
  
@@ -145,6 +145,7 @@ index 05878bb5861d..d79353dea85b 100644
 +	struct sched_dl_entity *parent;
 +	bool has_active_tasks, is_active_group;
 +	u64 old_runtime;
++	unsigned long flags;
 +	unsigned long new_bw;
 +
 +	if (!tg->tg_server)
@@ -159,7 +160,7 @@ index 05878bb5861d..d79353dea85b 100644
 +	is_active_group = is_active_sched_group(tg);
 +	has_active_tasks = tg_has_tasks(tg, true);
 +
-+	raw_spin_rq_lock_irq(rq);
++	raw_spin_rq_lock_irqsave(rq, flags);
 +	update_rq_clock(rq);
 +	dl_server_stop(dl_se);
 +
@@ -191,7 +192,7 @@ index 05878bb5861d..d79353dea85b 100644
 +	if (has_active_tasks)
 +		dl_server_start(dl_se);
 +
-+	raw_spin_rq_unlock_irq(rq);
++	raw_spin_rq_unlock_irqrestore(rq, flags);
 +}
 +#endif
 +

@@ -1,4 +1,4 @@
-From ab55cb9bc02669d92b250770742ea1c13e2604a8 Mon Sep 17 00:00:00 2001
+From 5bb6cc2490daf2ce0c2b03eff2c09b80fb5fe573 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 26 Nov 2025 10:10:43 +0100
 Subject: [PATCH 20/28] sched: add TG bandwidth server tracepoints
@@ -192,7 +192,7 @@ index 7b2645b50e78..1168899e088c 100644
   * Following tracepoints are not exported in tracefs and provide hooking
   * mechanisms only for testing and debugging purposes.
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 4b5c3e6c4f41..c54ccebb3f59 100644
+index 32e03af2acb0..6c2045b2001e 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2188,8 +2188,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
@@ -306,10 +306,10 @@ index 4b5c3e6c4f41..c54ccebb3f59 100644
  	return p;
  }
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 1f4acbb06335..3f70c29c289b 100644
+index e5332ff9f8c7..cd9163847cdd 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -1080,8 +1080,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
+@@ -1085,8 +1085,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
  
  	if (dl_se->dl_yielded)
  		dl_se->dl_yielded = 0;
@@ -324,7 +324,7 @@ index 1f4acbb06335..3f70c29c289b 100644
  
  	/*
  	 * If this is the replenishment of a deferred reservation,
-@@ -1742,6 +1747,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64
+@@ -1747,6 +1752,11 @@ throttle:
  	if (dl_runtime_exceeded(dl_se) || dl_se->dl_yielded) {
  		dl_se->dl_throttled = 1;
  

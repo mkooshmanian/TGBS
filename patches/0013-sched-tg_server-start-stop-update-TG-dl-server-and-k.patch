@@ -1,4 +1,4 @@
-From f88e25dda4f4d4349907fae8bdc326e6e22156bf Mon Sep 17 00:00:00 2001
+From 4933ed65a5d01f49795e75451f7b52405655c47d Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:26:22 +0100
 Subject: [PATCH 13/28] sched/tg_server: start/stop/update TG dl server and
@@ -19,7 +19,7 @@ stop the tick while a server runs on the physical rq.
  4 files changed, 145 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 06843c90a67b..97028a52e616 100644
+index deb33ea460cd..03e37654219a 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2162,8 +2162,94 @@ unsigned long get_wchan(struct task_struct *p)
@@ -180,10 +180,10 @@ index 06843c90a67b..97028a52e616 100644
  
  void activate_task(struct rq *rq, struct task_struct *p, int flags)
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index de81abb4b7e6..d48e7558d269 100644
+index 01155ca0c51d..8d9bfe088459 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -1949,11 +1949,22 @@ static inline
+@@ -1954,11 +1954,22 @@ static inline
  void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
  {
  	u64 deadline = dl_se->deadline;
@@ -208,7 +208,7 @@ index de81abb4b7e6..d48e7558d269 100644
  
  	inc_dl_deadline(dl_rq, deadline);
  }
-@@ -1961,11 +1972,16 @@ void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
+@@ -1966,11 +1977,16 @@ void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
  static inline
  void dec_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
  {

@@ -1,4 +1,4 @@
-From 59f8242e8e35ca4aab7133e7439bc634ef164de3 Mon Sep 17 00:00:00 2001
+From b2ec492597b252622cb4ba062e4a190f6af6be8c Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 11 Dec 2025 17:06:19 +0100
 Subject: [PATCH 23/28] sched/tgbs: add throttle/unthrottle support for TG
@@ -36,7 +36,7 @@ index 25991138a647..ac2874f3dba1 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b365baa7452c..af6720a58017 100644
+index 7c9189f93e22..1d8910709408 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -39,6 +39,8 @@
@@ -181,7 +181,7 @@ index b365baa7452c..af6720a58017 100644
  		if (p)
  			return true;
  	}
-@@ -2255,6 +2346,151 @@ static bool tg_server_pull_task(struct task_group *tg, struct rq *dst_vrq)
+@@ -2255,6 +2346,151 @@ unlock_phys:
  	return false;
  }
  
@@ -414,9 +414,9 @@ index b365baa7452c..af6720a58017 100644
 +	server->tgbs_irq_node.next = NULL;
 +	atomic_set(&server->tgbs_irq_pending, 0);
 +	atomic_long_set(&server->tgbs_irq_actions, 0);
- 	tg->tg_server[cpu] = server;
  	vrq->cfs.rq = vrq;
  	vrq->rt.rq = vrq;
+ 	vrq->dl.rq = vrq;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
 index 4476c0ee21fe..7b1520b5551a 100644
 --- a/kernel/sched/sched.h

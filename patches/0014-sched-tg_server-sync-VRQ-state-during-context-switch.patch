@@ -1,4 +1,4 @@
-From 5e275d8e884b51f5802df35e3b571abd10f24b0d Mon Sep 17 00:00:00 2001
+From b92812cd9d004ddcd997d53cf462a14e1ae15403 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:36:19 +0100
 Subject: [PATCH 14/28] sched/tg_server: sync VRQ state during context switches
@@ -17,7 +17,7 @@ in sync with the physical rq for preemption decisions.
  2 files changed, 33 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 97028a52e616..5303b9f72f67 100644
+index 03e37654219a..cbacb114df16 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2404,10 +2404,37 @@ void check_class_changed(struct rq *rq, struct task_struct *p,

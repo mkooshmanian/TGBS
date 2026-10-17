@@ -1,4 +1,4 @@
-From 0c569e074705b48a10c16b43a39eda64421085b2 Mon Sep 17 00:00:00 2001
+From 820747daf5b81a4e26c96dd2ef3b580f50f719ad Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:48:44 +0100
 Subject: [PATCH 15/28] sched: route FAIR tasks through TG server virtual rq
@@ -36,7 +36,7 @@ index 69d709aae15e..284fc0eb0570 100644
  	struct cfs_rq			*my_q;
  	/* cached value of my_q->h_nr_running */
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 5303b9f72f67..12d8c1c35f5f 100644
+index cbacb114df16..16fac772e1ad 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9046,6 +9046,7 @@ void __init sched_init(void)
@@ -78,14 +78,14 @@ index 5303b9f72f67..12d8c1c35f5f 100644
  }
  
  void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
-@@ -9518,6 +9539,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -9517,6 +9538,7 @@ void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+ 	server->tg = tg;
  	server->vrq = vrq;
  	server->parent = parent;
- 	tg->tg_server[cpu] = server;
 +	vrq->cfs.rq = vrq;
+ 	tg->tg_server[cpu] = server;
  }
  
- void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
 diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
 index 24467b78fbb1..df2f1abf05d6 100644
 --- a/kernel/sched/fair.c

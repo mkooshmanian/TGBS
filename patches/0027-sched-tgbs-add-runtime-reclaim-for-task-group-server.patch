@@ -1,4 +1,4 @@
-From 7e6364a0cbab7ef564ba512e03fd24f36e2e0eff Mon Sep 17 00:00:00 2001
+From 6b8d7b9c034d4bdb68ed0172e31dbbc8f3a9e062 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:50:29 +0100
 Subject: [PATCH 27/28] sched/tgbs: add runtime reclaim for task-group servers
@@ -16,7 +16,7 @@ on that rq.
  3 files changed, 75 insertions(+), 1 deletion(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index a0cc0e6ea8e0..139fc94315cf 100644
+index 7e5903d3d929..39978f318c3a 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -10111,6 +10111,12 @@ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
@@ -32,7 +32,7 @@ index a0cc0e6ea8e0..139fc94315cf 100644
  }
  
  static struct rq *alloc_virtual_rq(struct task_group *tg, int cpu,
-@@ -10234,6 +10240,7 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -10235,6 +10241,7 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  		server->dl_deadline = server->dl_period;
  		server->dl_bw = to_ratio(server->dl_period, server->dl_runtime);
  		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
@@ -40,7 +40,7 @@ index a0cc0e6ea8e0..139fc94315cf 100644
  		server->dl_server = 1;
  
  		dl_server_init(server, parent_rq, tg_bandwidth_server_pick_task);
-@@ -10472,6 +10479,43 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -10473,6 +10480,43 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  	return ret;
  }
  
@@ -84,7 +84,7 @@ index a0cc0e6ea8e0..139fc94315cf 100644
  int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us)
  {
  	u64 period, runtime;
-@@ -10836,6 +10880,21 @@ static u64 cpu_tg_period_read_uint(struct cgroup_subsys_state *css,
+@@ -10841,6 +10885,21 @@ static u64 cpu_tg_period_read_uint(struct cgroup_subsys_state *css,
  {
  	return sched_group_tg_period(css_tg(css));
  }
@@ -106,7 +106,7 @@ index a0cc0e6ea8e0..139fc94315cf 100644
  #endif /* CONFIG_TG_BANDWIDTH_SERVER */
  
  #ifdef CONFIG_UCLAMP_TASK_GROUP
-@@ -11750,6 +11809,12 @@ static struct cftype cpu_files[] = {
+@@ -11755,6 +11814,12 @@ static struct cftype cpu_files[] = {
  		.read_u64 = cpu_tg_period_read_uint,
  		.write_u64 = cpu_tg_period_write_uint,
  	},
@@ -120,10 +120,10 @@ index a0cc0e6ea8e0..139fc94315cf 100644
  #ifdef CONFIG_GROUP_SCHED_WEIGHT
  	{
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 5bdb2ce7b8c3..01eb90533904 100644
+index 553e3ed2854e..134eb097f0f8 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -1715,7 +1715,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64
+@@ -1743,7 +1743,11 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64
  		return;
  
  	scaled_delta_exec = delta_exec;

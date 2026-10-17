@@ -1,4 +1,4 @@
-From b6fd239941fe9e0509b930e87842f228305cd295 Mon Sep 17 00:00:00 2001
+From 409f85ad55758874d8241b68c2ad3c9b7afd616a Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:25:54 +0100
 Subject: [PATCH 19/28] schd/tgbs: lock virtual rq for class change callbacks
@@ -16,7 +16,7 @@ groups manipulate tasks on non-root VRQs.
  1 file changed, 36 insertions(+), 4 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 84a07b6efd7f..4b5c3e6c4f41 100644
+index d78d1fa3d5bc..32e03af2acb0 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2377,8 +2377,24 @@ inline int task_curr(const struct task_struct *p)

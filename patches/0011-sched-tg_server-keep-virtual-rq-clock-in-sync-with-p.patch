@@ -1,4 +1,4 @@
-From 2c508fd8b310a38f33d54b7b7228ebaa1ee68aef Mon Sep 17 00:00:00 2001
+From 75ef9f774b4a104815916d3d4bca86ff9da839ee Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:04:44 +0100
 Subject: [PATCH 11/28] sched/tg_server: keep virtual rq clock in sync with
@@ -19,7 +19,7 @@ with the physical rq for accounting and timer programming.
  4 files changed, 136 insertions(+), 4 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 10bf356a1893..27998e236eeb 100644
+index 9a8bbc67089c..cec6feeff413 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2082,6 +2082,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
@@ -80,10 +80,10 @@ index 10bf356a1893..27998e236eeb 100644
  	ns = p->se.sum_exec_runtime;
  	task_rq_unlock(rq, p, &rf);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 8d69f7971dd7..de81abb4b7e6 100644
+index 244ca5989ab7..01155ca0c51d 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -1190,6 +1190,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
+@@ -1195,6 +1195,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
  
  	lockdep_assert_rq_held(rq);
  

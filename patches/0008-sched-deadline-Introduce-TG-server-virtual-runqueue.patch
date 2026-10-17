@@ -1,4 +1,4 @@
-From f0da1892211b27a163000f475c3e02900bac0a88 Mon Sep 17 00:00:00 2001
+From 47122cc5b4c59e068e9545c4335058e027383205 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 11:19:35 +0100
 Subject: [PATCH 08/28] sched/deadline: Introduce TG server virtual runqueue
@@ -16,10 +16,10 @@ updates no longer need to distinguish active tasks once the virtual rq hosts
 the runnable set.
 ---
  include/linux/sched.h   |   1 +
- kernel/sched/core.c     | 160 ++++++++++++++++++++++++++++++++++------
- kernel/sched/deadline.c |  11 ++-
+ kernel/sched/core.c     | 161 ++++++++++++++++++++++++++++++++++------
+ kernel/sched/deadline.c |  15 +++-
  kernel/sched/sched.h    |  23 +++++-
- 4 files changed, 167 insertions(+), 28 deletions(-)
+ 4 files changed, 172 insertions(+), 28 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 1b554219088d..69d709aae15e 100644
@@ -34,7 +34,7 @@ index 1b554219088d..69d709aae15e 100644
  	struct task_group		*tg;
  #endif
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 9b694085d449..18d32bdaa310 100644
+index 9b694085d449..d9c9580f7db9 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2053,6 +2053,22 @@ static inline void uclamp_post_fork(struct task_struct *p) { }
@@ -101,17 +101,17 @@ index 9b694085d449..18d32bdaa310 100644
  	server->parent = parent;
  	tg->tg_server[cpu] = server;
  }
-@@ -9218,6 +9228,89 @@ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
+@@ -9218,6 +9228,90 @@ void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime)
  	dl_bw->dl_runtime = runtime;
  }
  
 +static struct rq *alloc_virtual_rq(struct task_group *tg, int cpu,
-+				   struct rq *template)
++				   struct rq *template, gfp_t gfp)
 +{
 +	struct rq *vrq;
 +	u64 now = sched_clock_cpu(cpu);
 +
-+	vrq = kzalloc_node(sizeof(*vrq), GFP_KERNEL, cpu_to_node(cpu));
++	vrq = kzalloc_node(sizeof(*vrq), gfp, cpu_to_node(cpu));
 +	if (!vrq)
 +		return NULL;
 +
@@ -141,7 +141,8 @@ index 9b694085d449..18d32bdaa310 100644
 +	vrq->cpu = cpu;
 +	vrq->online = 0;
 +	vrq->idle = idle_task(cpu);
-+	vrq->curr = vrq->idle;
++	rq_set_donor(vrq, vrq->idle);
++	RCU_INIT_POINTER(vrq->curr, vrq->idle);
 +	vrq->rd = template ? template->rd : NULL;
 +	vrq->sd = template ? template->sd : NULL;
 +	vrq->cpu_capacity = template ? template->cpu_capacity : SCHED_CAPACITY_SCALE;
@@ -164,7 +165,7 @@ index 9b694085d449..18d32bdaa310 100644
 +
 +	hrtick_rq_init(vrq);
 +
-+	if (!zalloc_cpumask_var_node(&vrq->scratch_mask, GFP_KERNEL,
++	if (!zalloc_cpumask_var_node(&vrq->scratch_mask, gfp,
 +				     cpu_to_node(cpu)))
 +		goto free_rq;
 +
@@ -191,7 +192,7 @@ index 9b694085d449..18d32bdaa310 100644
  int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  {
  	int cpu;
-@@ -9231,7 +9324,8 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -9231,7 +9325,8 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  
  	for_each_possible_cpu(cpu) {
  		struct sched_dl_entity *server;
@@ -201,11 +202,11 @@ index 9b694085d449..18d32bdaa310 100644
  		struct sched_dl_entity *parent_server =
  			parent ? parent->tg_server[cpu] : NULL;
  
-@@ -9239,6 +9333,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -9239,6 +9334,12 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  		if (!server)
  			goto err_free;
  
-+		vrq = alloc_virtual_rq(tg, cpu, parent_rq);
++		vrq = alloc_virtual_rq(tg, cpu, parent_rq, GFP_KERNEL);
 +		if (!vrq) {
 +			kfree(server);
 +			goto err_free;
@@ -214,7 +215,7 @@ index 9b694085d449..18d32bdaa310 100644
  		init_dl_entity(server);
  		server->dl_runtime = tg->tg_bandwidth.dl_runtime;
  		server->dl_period = tg->tg_bandwidth.dl_period;
-@@ -9247,16 +9347,24 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
+@@ -9247,16 +9348,24 @@ int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  		server->dl_density = to_ratio(server->dl_period, server->dl_runtime);
  		server->dl_server = 1;
  
@@ -242,7 +243,7 @@ index 9b694085d449..18d32bdaa310 100644
  		tg->tg_server[cpu] = NULL;
  	}
  	kfree(tg->tg_server);
-@@ -9274,7 +9382,10 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -9274,7 +9383,10 @@ void free_tg_bandwidth_server(struct task_group *tg)
  		return;
  
  	for_each_possible_cpu(cpu) {
@@ -254,7 +255,7 @@ index 9b694085d449..18d32bdaa310 100644
  			continue;
  
  		/*
-@@ -9285,13 +9396,16 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -9285,13 +9397,16 @@ void free_tg_bandwidth_server(struct task_group *tg)
  		 * Fix this issue by changing the group runtime
  		 * to 0 immediately before freeing it.
  		 */
@@ -277,7 +278,7 @@ index 9b694085d449..18d32bdaa310 100644
  		tg->tg_server[cpu] = NULL;
  	}
  
-@@ -9353,7 +9467,7 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -9353,7 +9468,7 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  		return -EINVAL;
  
  	if (dl_bandwidth_enabled() && !runtime && cur_runtime &&
@@ -287,7 +288,7 @@ index 9b694085d449..18d32bdaa310 100644
  
  	total = to_ratio(period, runtime);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index d79353dea85b..8d69f7971dd7 100644
+index b3c30151234d..244ca5989ab7 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -397,9 +397,11 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
@@ -301,9 +302,9 @@ index d79353dea85b..8d69f7971dd7 100644
 +	bool is_active_group;
 +	unsigned int nr_task_running;
  	u64 old_runtime;
+ 	unsigned long flags;
  	unsigned long new_bw;
- 
-@@ -411,9 +413,12 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+@@ -412,9 +414,11 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
  		return;
  
  	rq = dl_se->rq;
@@ -313,19 +314,23 @@ index d79353dea85b..8d69f7971dd7 100644
 +
  	is_active_group = is_active_sched_group(tg);
 -	has_active_tasks = tg_has_tasks(tg, true);
-+	nr_task_running = READ_ONCE(vrq->nr_running);
  
- 	raw_spin_rq_lock_irq(rq);
+ 	raw_spin_rq_lock_irqsave(rq, flags);
  	update_rq_clock(rq);
-@@ -444,7 +449,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
+@@ -445,7 +449,12 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
  			__sub_rq_bw(parent->dl_bw, dl_rq);
  	}
  
 -	if (has_active_tasks)
++	/* Serialize the restart decision with enqueues and dequeues. */
++	raw_spin_rq_lock_nested(vrq, SINGLE_DEPTH_NESTING);
++	nr_task_running = vrq->nr_running;
++	raw_spin_rq_unlock(vrq);
++
 +	if (nr_task_running)
  		dl_server_start(dl_se);
  
- 	raw_spin_rq_unlock_irq(rq);
+ 	raw_spin_rq_unlock_irqrestore(rq, flags);
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
 index a22746bbb9e7..45e4b229bbfd 100644
 --- a/kernel/sched/sched.h

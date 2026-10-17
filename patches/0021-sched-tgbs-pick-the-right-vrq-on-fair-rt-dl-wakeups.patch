@@ -1,4 +1,4 @@
-From c9a8ed30d2b975949f016a619a6ffe1f60a997af Mon Sep 17 00:00:00 2001
+From b7fae8477f47f6b9e8ffd95d28c1d5ea96cd5836 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 11:09:28 +0100
 Subject: [PATCH 21/28] sched/tgbs: pick the right vrq on fair/rt/dl wakeups
@@ -20,7 +20,7 @@ the way for proper multi-core support.
  5 files changed, 173 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index c54ccebb3f59..3390e722e3b2 100644
+index 6c2045b2001e..b0f20762bfb4 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2163,6 +2163,25 @@ unsigned long get_wchan(struct task_struct *p)
@@ -61,10 +61,10 @@ index c54ccebb3f59..3390e722e3b2 100644
  	 * In order not to call set_task_cpu() on a blocking task we need
  	 * to rely on ttwu() to place the task on a valid ->cpus_ptr
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 3f70c29c289b..915a0d5e4b96 100644
+index cd9163847cdd..7e4f1f0ecfad 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -2733,6 +2733,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
+@@ -2738,6 +2738,41 @@ struct task_struct *tg_server_pick_dl_task(struct rq *rq)
  {
  	return pick_task_dl(rq);
  }

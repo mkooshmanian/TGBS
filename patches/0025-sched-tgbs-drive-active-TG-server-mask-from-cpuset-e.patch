@@ -1,4 +1,4 @@
-From e43722ed65ba1421fbe6bd03184fe6a5d6568c06 Mon Sep 17 00:00:00 2001
+From 85a5f942003bfa32c1dab78b98eeb62afe07171e Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:46:39 +0100
 Subject: [PATCH 25/28] sched/tgbs: drive active TG server mask from cpuset
@@ -11,11 +11,11 @@ Make TG bandwidth admission checks mask-aware so disjoint cpuset configurations 
  include/linux/cpuset.h  |   9 ++
  include/linux/sched.h   |   8 ++
  kernel/cgroup/cpuset.c  |  18 ++++
- kernel/sched/core.c     | 179 +++++++++++++++++++++++++++++-----------
+ kernel/sched/core.c     | 183 +++++++++++++++++++++++++++++-----------
  kernel/sched/deadline.c |   6 +-
  kernel/sched/fair.c     |   6 +-
  kernel/sched/rt.c       |   6 +-
- 7 files changed, 180 insertions(+), 52 deletions(-)
+ 7 files changed, 184 insertions(+), 52 deletions(-)
 
 diff --git a/include/linux/cpuset.h b/include/linux/cpuset.h
 index 2ddb256187b5..806f3ee65d3e 100644
@@ -90,7 +90,7 @@ index 52468d2c178a..dd3d4de6932f 100644
  /**
   * compute_effective_cpumask - Compute the effective cpumask of the cpuset
   * @new_cpus: the temp variable for the new effective_cpus mask
-@@ -2275,6 +2291,8 @@ static void update_cpumasks_hier(struct cpuset *cs, struct tmpmasks *tmp,
+@@ -2275,6 +2291,8 @@ get_css:
  		WARN_ON(!is_in_v2_mode() &&
  			!cpumask_equal(cp->cpus_allowed, cp->effective_cpus));
  
@@ -100,7 +100,7 @@ index 52468d2c178a..dd3d4de6932f 100644
  
  		/*
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b1edd20fb8a6..472423818a5e 100644
+index f6a358d3adee..adc206e79ff8 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9878,6 +9878,13 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
@@ -239,7 +239,7 @@ index b1edd20fb8a6..472423818a5e 100644
  	}
  	rcu_read_unlock();
  
-@@ -10282,40 +10352,31 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+@@ -10283,40 +10353,31 @@ out_free:
  	return 0;
  }
  
@@ -293,7 +293,7 @@ index b1edd20fb8a6..472423818a5e 100644
  			return -EBUSY;
  
  		return 0;
-@@ -10337,27 +10398,24 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -10338,27 +10399,24 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  	    tg_has_tasks(tg))
  		return -EBUSY;
  
@@ -335,7 +335,7 @@ index b1edd20fb8a6..472423818a5e 100644
  	}
  
  	return 0;
-@@ -10369,6 +10427,7 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
+@@ -10370,6 +10428,7 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
  		.tg = tg,
  		.period = period,
  		.runtime = runtime,
@@ -343,24 +343,28 @@ index b1edd20fb8a6..472423818a5e 100644
  	};
  
  	guard(rcu)();
-@@ -10658,6 +10717,7 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -10659,6 +10718,9 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
  {
  	struct task_group *tg = css_tg(css);
  	struct task_group *parent = css_tg(css->parent);
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
 +	cpumask_var_t cpus;
++#endif
  	int ret;
  
  	ret = scx_tg_online(tg);
-@@ -10674,9 +10734,30 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -10675,9 +10737,32 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
  	cpu_util_update_eff(css);
  #endif
  
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
 +	if (tg_uses_bandwidth_server(tg) &&
 +	    zalloc_cpumask_var(&cpus, GFP_KERNEL)) {
 +		if (!cpuset_cgroup_effective_cpus(css->cgroup, cpus))
 +			tg_group_set_active_mask(tg, cpus);
 +		free_cpumask_var(cpus);
 +	}
++#endif
 +
  	return 0;
  }
@@ -383,10 +387,10 @@ index b1edd20fb8a6..472423818a5e 100644
  {
  	struct task_group *tg = css_tg(css);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 0609599c563c..c0d40c13b401 100644
+index 8105c218dab5..6b88ce756c4b 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
-@@ -2766,7 +2766,11 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
+@@ -2771,7 +2771,11 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
  		}
  	}
  

@@ -1,4 +1,4 @@
-From 39e2699c9249e45dec263672ae861f96fa8acea4 Mon Sep 17 00:00:00 2001
+From 94a56d85b1f2c5bcb04f2ea7b54e7ff8419c0c75 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 10:09:37 +0100
 Subject: [PATCH 10/28] sched/tg_server: add virtual rq locking helpers
@@ -18,7 +18,7 @@ servers; it just aligns vrq locking with real rq locking.
  2 files changed, 18 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index ab51a6eb06ed..10bf356a1893 100644
+index 77d7ecabc13b..9a8bbc67089c 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2054,6 +2054,8 @@ static inline void init_uclamp(void) { }
