@@ -3712,6 +3712,12 @@ int sched_dl_global_validate(void)
 	int cpu, cpus, ret = 0;
 	unsigned long flags;
 
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	ret = tg_validate_root_bandwidth();
+	if (ret)
+		return ret;
+#endif
+
 	/*
 	 * Here we want to check the bandwidth not being set to some
 	 * value smaller than the currently allocated bandwidth in

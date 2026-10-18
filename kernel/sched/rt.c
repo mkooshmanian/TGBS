@@ -3036,6 +3036,9 @@ static int sched_rt_handler(const struct ctl_table *table, int write, void *buff
 
 	mutex_lock(&mutex);
 	sched_domains_mutex_lock();
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	mutex_lock(&tg_bandwidth_constraints_mutex);
+#endif
 	old_period = sysctl_sched_rt_period;
 	old_runtime = sysctl_sched_rt_runtime;
 
@@ -3062,6 +3065,9 @@ undo:
 		sysctl_sched_rt_period = old_period;
 		sysctl_sched_rt_runtime = old_runtime;
 	}
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+	mutex_unlock(&tg_bandwidth_constraints_mutex);
+#endif
 	sched_domains_mutex_unlock();
 	mutex_unlock(&mutex);
 
