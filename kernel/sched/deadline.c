@@ -3314,6 +3314,15 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
 	attr->sched_flags |= dl_se->flags;
 }
 
+/* Validate a period in nanoseconds against the current DEADLINE limits. */
+bool dl_period_valid(u64 period)
+{
+	u64 max = (u64)READ_ONCE(sysctl_sched_dl_period_max) * NSEC_PER_USEC;
+	u64 min = (u64)READ_ONCE(sysctl_sched_dl_period_min) * NSEC_PER_USEC;
+
+	return period && period >= min && period <= max;
+}
+
 /*
  * This function validates the new parameters of a -deadline task.
  * We ask for the deadline not being zero, and greater or equal
@@ -3326,7 +3335,7 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
  */
 bool __checkparam_dl(const struct sched_attr *attr)
 {
-	u64 period, max, min;
+	u64 period;
 
 	/* special dl tasks don't actually use any parameter */
 	if (attr->sched_flags & SCHED_FLAG_SUGOV)
@@ -3360,13 +3369,7 @@ bool __checkparam_dl(const struct sched_attr *attr)
 	    attr->sched_deadline < attr->sched_runtime)
 		return false;
 
-	max = (u64)READ_ONCE(sysctl_sched_dl_period_max) * NSEC_PER_USEC;
-	min = (u64)READ_ONCE(sysctl_sched_dl_period_min) * NSEC_PER_USEC;
-
-	if (period < min || period > max)
-		return false;
-
-	return true;
+	return dl_period_valid(period);
 }
 
 /*
