@@ -22,10 +22,12 @@ The implementation provides:
 * support for `FAIR`, `RT`, and `DEADLINE` tasks within the same isolated group;
 * common runtime accounting against the task-group reservation;
 * hierarchical bandwidth admission control;
+* a default runtime budget with per-CPU overrides and a common group period;
 * multicore placement and balancing of TGBS virtual runqueues;
 * cpuset-aware server activation and task placement;
 * optional runtime reclaim through the Linux GRUB mechanism;
-* optional temporal isolation of workloads running in the root CPU cgroup.
+* optional temporal isolation of workloads running in the root CPU cgroup,
+  with per-CPU residual budgets and a configurable period.
 
 Scheduling inside a TGBS group continues to rely on the native Linux scheduling classes. TGBS therefore isolates bandwidth at the task-group level without requiring one container per scheduling policy.
 
@@ -131,6 +133,8 @@ Current released artifacts include:
 | v1.2         | v6.18             | `patch/tgbs-v1.2-k6.18` |
 | v1.3         | v6.18             | `patch/tgbs-v1.3-k6.18` |
 | v1.4         | v6.18             | `patch/tgbs-v1.4-k6.18` |
+| v1.5         | v6.18             | `patch/tgbs-v1.5-k6.18` |
+| v1.6         | v6.18             | `patch/tgbs-v1.6-k6.18` |
 
 A release archive contains the patch series and the metadata needed to understand and cite the corresponding artifact.
 
