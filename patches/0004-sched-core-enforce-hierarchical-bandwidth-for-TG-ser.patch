@@ -1,7 +1,7 @@
-From dde8767496b66b9bab326a75e01dc16cb4a5cade Mon Sep 17 00:00:00 2001
+From a45a4eb2c6ceab6f90266f4c041ac9e43cc25b4d Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 2 Nov 2025 14:24:20 +0100
-Subject: [PATCH 03/28] sched/core: enforce hierarchical bandwidth for TG
+Subject: [PATCH 04/31] sched/core: enforce hierarchical bandwidth for TG
  servers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -21,12 +21,12 @@ Co-developed-by: Alessio Balsini a.balsini@sssup.it
 Co-developed-by: Andrea Parri parri.andrea@gmail.com
 Co-developed-by: Yuri Andriaccio yurand2000@gmail.com
 ---
- kernel/sched/core.c  | 231 ++++++++++++++++++++++++++++++++++++++++++-
+ kernel/sched/core.c  | 233 ++++++++++++++++++++++++++++++++++++++++++-
  kernel/sched/sched.h |   9 +-
- 2 files changed, 234 insertions(+), 6 deletions(-)
+ 2 files changed, 236 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 57f6172c4c8f..c26428e0b42a 100644
+index 57f6172c4c8f..43184500e303 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -1385,7 +1385,7 @@ bool sched_can_stop_tick(struct rq *rq)
@@ -127,7 +127,7 @@ index 57f6172c4c8f..c26428e0b42a 100644
  static struct task_struct *
  tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  {
-@@ -9175,6 +9257,153 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -9175,6 +9257,155 @@ void free_tg_bandwidth_server(struct task_group *tg)
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
  }
@@ -210,8 +210,7 @@ index 57f6172c4c8f..c26428e0b42a 100644
 +	unsigned long flags;
 +	int ret;
 +
-+	/* Disable when runtime is zero; otherwise require a valid period. */
-+	if (runtime && !period)
++	if (!dl_period_valid(period))
 +		return -EINVAL;
 +
 +	/* Bound runtime to the reservation window. */
@@ -266,6 +265,9 @@ index 57f6172c4c8f..c26428e0b42a 100644
 +		return -EINVAL;
 +
 +	period = period_us * NSEC_PER_USEC;
++	if (!dl_period_valid(period))
++		return -EINVAL;
++
 +	runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
 +
 +	return tg_set_dl_bandwidth(tg, period, runtime);
@@ -282,10 +284,10 @@ index 57f6172c4c8f..c26428e0b42a 100644
  
  static void sched_free_group(struct task_group *tg)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 0685944bafa8..a2f2dd5db5d9 100644
+index 6e56da47e58b..09a080f26d31 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -577,15 +577,14 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
+@@ -578,15 +578,14 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *rq,
  		struct sched_dl_entity *server, int cpu,
  		struct sched_dl_entity *parent);
  extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);

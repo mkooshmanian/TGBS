@@ -1,7 +1,7 @@
-From 85a5f942003bfa32c1dab78b98eeb62afe07171e Mon Sep 17 00:00:00 2001
+From d99e671b838ff49ade06ee27c667b59892563d90 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:46:39 +0100
-Subject: [PATCH 25/28] sched/tgbs: drive active TG server mask from cpuset
+Subject: [PATCH 26/31] sched/tgbs: drive active TG server mask from cpuset
  effective CPUs
 
 Use cpuset effective CPUs to derive the active TG bandwidth server mask of each task group and refresh it when the cgroup mask changes.
@@ -100,7 +100,7 @@ index 52468d2c178a..dd3d4de6932f 100644
  
  		/*
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index f6a358d3adee..adc206e79ff8 100644
+index c79695a973bc..4de8f8a339cf 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9878,6 +9878,13 @@ static inline void alloc_uclamp_sched_group(struct task_group *tg,
@@ -343,7 +343,7 @@ index f6a358d3adee..adc206e79ff8 100644
  	};
  
  	guard(rcu)();
-@@ -10659,6 +10718,9 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -10661,6 +10720,9 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
  {
  	struct task_group *tg = css_tg(css);
  	struct task_group *parent = css_tg(css->parent);
@@ -353,7 +353,7 @@ index f6a358d3adee..adc206e79ff8 100644
  	int ret;
  
  	ret = scx_tg_online(tg);
-@@ -10675,9 +10737,32 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -10677,9 +10739,32 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
  	cpu_util_update_eff(css);
  #endif
  
@@ -387,7 +387,7 @@ index f6a358d3adee..adc206e79ff8 100644
  {
  	struct task_group *tg = css_tg(css);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 8105c218dab5..6b88ce756c4b 100644
+index 1976a9e1e0ff..2688b30dcb41 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -2771,7 +2771,11 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
@@ -421,10 +421,10 @@ index 568479ed553c..b89ab0269c31 100644
  
  struct task_struct *tg_server_pull_fair_task_from_cpu(struct rq *rq, int dst_cpu)
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
-index f1fccea8db30..01aba4042de5 100644
+index b1c9ec64b202..a9cf77002882 100644
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
-@@ -1817,7 +1817,11 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
+@@ -1828,7 +1828,11 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
  		}
  	}
  

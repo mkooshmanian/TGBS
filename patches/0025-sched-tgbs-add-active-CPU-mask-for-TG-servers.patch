@@ -1,7 +1,7 @@
-From 95dd02fedb4e4bc470806ecab2e64f614542e131 Mon Sep 17 00:00:00 2001
+From d16c7e391adb0f6d93d95e9c78965d3371c49857 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:40:15 +0100
-Subject: [PATCH 24/28] sched/tgbs: add active CPU mask for TG servers
+Subject: [PATCH 25/31] sched/tgbs: add active CPU mask for TG servers
 
 Track a per-task-group mask of CPUs where TG bandwidth servers are active.
 
@@ -12,7 +12,7 @@ Initialize it from the parent mask, keep the root mask at all CPUs, and apply it
  2 files changed, 66 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 1d8910709408..f6a358d3adee 100644
+index 4c93aefc70c6..c79695a973bc 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9479,6 +9479,9 @@ void __init sched_init(void)
@@ -103,7 +103,7 @@ index 1d8910709408..f6a358d3adee 100644
  struct tg_bandwidth_schedulable_data {
  	struct task_group *tg;
  	u64 period;
-@@ -10355,7 +10408,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -10354,7 +10407,9 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  		return 0;
  
  	for_each_possible_cpu(cpu) {
@@ -115,10 +115,10 @@ index 1d8910709408..f6a358d3adee 100644
  
  	return ret;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 7b1520b5551a..9412c4040303 100644
+index 7c7e6d7c5d1d..b025fc941d73 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -502,6 +502,7 @@ struct task_group {
+@@ -503,6 +503,7 @@ struct task_group {
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  	struct sched_dl_entity **tg_server;
  	struct dl_bandwidth tg_bandwidth;
@@ -126,7 +126,7 @@ index 7b1520b5551a..9412c4040303 100644
  #endif
  
  #ifdef CONFIG_GROUP_SCHED_WEIGHT
-@@ -632,6 +633,8 @@ extern long sched_group_tg_period(struct task_group *tg);
+@@ -633,6 +634,8 @@ extern long sched_group_tg_period(struct task_group *tg);
  
  extern void free_tg_bandwidth_server(struct task_group *tg);
  extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
@@ -135,7 +135,7 @@ index 7b1520b5551a..9412c4040303 100644
  
  static inline bool tg_uses_bandwidth_server(struct task_group *tg)
  {
-@@ -643,7 +646,10 @@ static inline bool tg_uses_bandwidth_server(struct task_group *tg)
+@@ -644,7 +647,10 @@ static inline bool tg_uses_bandwidth_server(struct task_group *tg)
  
  static inline const struct cpumask *tg_active_mask(struct task_group *tg)
  {
@@ -147,7 +147,7 @@ index 7b1520b5551a..9412c4040303 100644
  }
  
  static inline bool tg_server_cpu_active(struct task_group *tg, int cpu)
-@@ -655,6 +661,8 @@ static inline bool task_uses_tg_bandwidth_server(struct task_struct *p);
+@@ -656,6 +662,8 @@ static inline bool task_uses_tg_bandwidth_server(struct task_struct *p);
  #else
  static inline void free_tg_bandwidth_server(struct task_group *tg) { }
  static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }

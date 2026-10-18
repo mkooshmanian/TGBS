@@ -1,7 +1,7 @@
-From 47122cc5b4c59e068e9545c4335058e027383205 Mon Sep 17 00:00:00 2001
+From 3a218a1946ce03e46e1c45f52e07862d15da7fb6 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 11:19:35 +0100
-Subject: [PATCH 08/28] sched/deadline: Introduce TG server virtual runqueue
+Subject: [PATCH 09/31] sched/deadline: Introduce TG server virtual runqueue
 
 Introduce a per-server virtual rq for CONFIG_TG_BANDWIDTH_SERVER and keep it
 within the sched_dl_entity. The virtual rq mirrors the CPU rq clock state so
@@ -18,8 +18,8 @@ the runnable set.
  include/linux/sched.h   |   1 +
  kernel/sched/core.c     | 161 ++++++++++++++++++++++++++++++++++------
  kernel/sched/deadline.c |  15 +++-
- kernel/sched/sched.h    |  23 +++++-
- 4 files changed, 172 insertions(+), 28 deletions(-)
+ kernel/sched/sched.h    |  30 +++++++-
+ 4 files changed, 179 insertions(+), 28 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 1b554219088d..69d709aae15e 100644
@@ -34,7 +34,7 @@ index 1b554219088d..69d709aae15e 100644
  	struct task_group		*tg;
  #endif
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 9b694085d449..d9c9580f7db9 100644
+index 75c1f4b334c3..012ebb9cc326 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2053,6 +2053,22 @@ static inline void uclamp_post_fork(struct task_struct *p) { }
@@ -288,7 +288,7 @@ index 9b694085d449..d9c9580f7db9 100644
  
  	total = to_ratio(period, runtime);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index b3c30151234d..244ca5989ab7 100644
+index 953affb6a7a9..c87100a19190 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -397,9 +397,11 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
@@ -332,7 +332,7 @@ index b3c30151234d..244ca5989ab7 100644
  
  	raw_spin_rq_unlock_irqrestore(rq, flags);
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index a22746bbb9e7..45e4b229bbfd 100644
+index 2b6323fed8de..03da2b16b52a 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -81,6 +81,7 @@ struct cfs_rq;
@@ -343,7 +343,7 @@ index a22746bbb9e7..45e4b229bbfd 100644
  
  #ifdef CONFIG_PARAVIRT
  # include <asm/paravirt.h>
-@@ -418,6 +419,10 @@ extern void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
+@@ -419,6 +420,10 @@ extern void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
  		    dl_server_pick_f pick_task);
  extern void sched_init_dl_servers(void);
  
@@ -354,7 +354,7 @@ index a22746bbb9e7..45e4b229bbfd 100644
  extern void dl_server_update_idle_time(struct rq *rq,
  		    struct task_struct *p);
  extern void fair_server_init(struct rq *rq);
-@@ -573,12 +578,11 @@ static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
+@@ -574,12 +579,11 @@ static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
  extern int tg_nop(struct task_group *tg, void *data);
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -368,7 +368,21 @@ index a22746bbb9e7..45e4b229bbfd 100644
  extern unsigned long tg_root_bandwidth_sum(void);
  extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
  extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
-@@ -2228,6 +2232,21 @@ static inline struct task_group *task_group(struct task_struct *p)
+@@ -1388,6 +1392,13 @@ DECLARE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+ #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
+ #define raw_rq()		raw_cpu_ptr(&runqueues)
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++static inline bool rq_is_virtual(struct rq *rq)
++{
++	return rq != cpu_rq(cpu_of(rq));
++}
++#endif
++
+ #ifdef CONFIG_SCHED_PROXY_EXEC
+ static inline void rq_set_donor(struct rq *rq, struct task_struct *t)
+ {
+@@ -2229,6 +2240,21 @@ static inline struct task_group *task_group(struct task_struct *p)
  
  #endif /* !CONFIG_CGROUP_SCHED */
  

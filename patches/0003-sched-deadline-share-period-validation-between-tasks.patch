@@ -1,0 +1,103 @@
+From 5bba315974fb6006a7c07b6936221b1963439b1e Mon Sep 17 00:00:00 2001
+From: Merlin Kooshmanian <mkooshmanian@gmail.com>
+Date: Sun, 18 Oct 2026 11:37:48 +0200
+Subject: [PATCH 03/31] sched/deadline: share period validation between tasks
+ and servers
+
+Extract the DEADLINE period bounds check into dl_period_valid() and use
+it for both DEADLINE tasks and the physical fair server. Read the current
+sched_deadline_period_min_us and sched_deadline_period_max_us settings
+instead of maintaining separate fixed bounds for servers.
+
+Keep task-specific runtime and deadline checks in __checkparam_dl(), so
+servers can reuse period validation without requiring a nonzero runtime.
+---
+ kernel/sched/deadline.c | 19 +++++++++++--------
+ kernel/sched/debug.c    |  7 +------
+ kernel/sched/sched.h    |  1 +
+ 3 files changed, 13 insertions(+), 14 deletions(-)
+
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index ed74f55812b8..5047e4ead73d 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -3314,6 +3314,15 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
+ 	attr->sched_flags |= dl_se->flags;
+ }
+ 
++/* Validate a period in nanoseconds against the current DEADLINE limits. */
++bool dl_period_valid(u64 period)
++{
++	u64 max = (u64)READ_ONCE(sysctl_sched_dl_period_max) * NSEC_PER_USEC;
++	u64 min = (u64)READ_ONCE(sysctl_sched_dl_period_min) * NSEC_PER_USEC;
++
++	return period && period >= min && period <= max;
++}
++
+ /*
+  * This function validates the new parameters of a -deadline task.
+  * We ask for the deadline not being zero, and greater or equal
+@@ -3326,7 +3335,7 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
+  */
+ bool __checkparam_dl(const struct sched_attr *attr)
+ {
+-	u64 period, max, min;
++	u64 period;
+ 
+ 	/* special dl tasks don't actually use any parameter */
+ 	if (attr->sched_flags & SCHED_FLAG_SUGOV)
+@@ -3360,13 +3369,7 @@ bool __checkparam_dl(const struct sched_attr *attr)
+ 	    attr->sched_deadline < attr->sched_runtime)
+ 		return false;
+ 
+-	max = (u64)READ_ONCE(sysctl_sched_dl_period_max) * NSEC_PER_USEC;
+-	min = (u64)READ_ONCE(sysctl_sched_dl_period_min) * NSEC_PER_USEC;
+-
+-	if (period < min || period > max)
+-		return false;
+-
+-	return true;
++	return dl_period_valid(period);
+ }
+ 
+ /*
+diff --git a/kernel/sched/debug.c b/kernel/sched/debug.c
+index 02e16b70a790..21afda0636a3 100644
+--- a/kernel/sched/debug.c
++++ b/kernel/sched/debug.c
+@@ -336,9 +336,6 @@ enum dl_param {
+ 	DL_PERIOD,
+ };
+ 
+-static unsigned long fair_server_period_max = (1UL << 22) * NSEC_PER_USEC; /* ~4 seconds */
+-static unsigned long fair_server_period_min = (100) * NSEC_PER_USEC;     /* 100 us */
+-
+ static ssize_t sched_fair_server_write(struct file *filp, const char __user *ubuf,
+ 				       size_t cnt, loff_t *ppos, enum dl_param param)
+ {
+@@ -370,9 +367,7 @@ static ssize_t sched_fair_server_write(struct file *filp, const char __user *ubu
+ 			break;
+ 		}
+ 
+-		if (runtime > period ||
+-		    period > fair_server_period_max ||
+-		    period < fair_server_period_min) {
++		if (runtime > period || !dl_period_valid(period)) {
+ 			return  -EINVAL;
+ 		}
+ 
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 0685944bafa8..6e56da47e58b 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -361,6 +361,7 @@ extern int  sched_dl_overflow(struct task_struct *p, int policy, const struct sc
+ extern void __setparam_dl(struct task_struct *p, const struct sched_attr *attr);
+ extern void __getparam_dl(struct task_struct *p, struct sched_attr *attr);
+ extern bool __checkparam_dl(const struct sched_attr *attr);
++extern bool dl_period_valid(u64 period);
+ extern bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr);
+ extern int  dl_cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpumask *trial);
+ extern int  dl_bw_deactivate(int cpu);
+-- 
+2.43.0
+

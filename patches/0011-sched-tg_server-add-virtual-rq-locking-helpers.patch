@@ -1,7 +1,7 @@
-From 94a56d85b1f2c5bcb04f2ea7b54e7ff8419c0c75 Mon Sep 17 00:00:00 2001
+From 3af4ec4ee35b37c2805cfc840b9a4647501c3c70 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 10:09:37 +0100
-Subject: [PATCH 10/28] sched/tg_server: add virtual rq locking helpers
+Subject: [PATCH 11/31] sched/tg_server: add virtual rq locking helpers
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -18,7 +18,7 @@ servers; it just aligns vrq locking with real rq locking.
  2 files changed, 18 insertions(+)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 77d7ecabc13b..9a8bbc67089c 100644
+index 98bde478d669..06b6401c5b34 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2054,6 +2054,8 @@ static inline void init_uclamp(void) { }
@@ -51,7 +51,7 @@ index 77d7ecabc13b..9a8bbc67089c 100644
  
  bool sched_task_on_rq(struct task_struct *p)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 72e643505957..8486b75e264a 100644
+index fab17f1e01dd..2206bc6694b1 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
 @@ -82,6 +82,7 @@ struct rt_rq;
@@ -62,7 +62,7 @@ index 72e643505957..8486b75e264a 100644
  
  #ifdef CONFIG_PARAVIRT
  # include <asm/paravirt.h>
-@@ -421,6 +422,8 @@ extern void sched_init_dl_servers(void);
+@@ -422,6 +423,8 @@ extern void sched_init_dl_servers(void);
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);

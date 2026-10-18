@@ -1,7 +1,7 @@
-From 6da52347933a648f390c828e2533ff3177c3d851 Mon Sep 17 00:00:00 2001
+From 3586c1c57916b2d1ce290b2bf31d2135723bf27b Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:48:50 +0100
-Subject: [PATCH 26/28] sched/deadline: account TG servers in root-domain
+Subject: [PATCH 27/31] sched/deadline: account TG servers in root-domain
  bandwidth
 
 Track task-group bandwidth servers in rd->dl_bw.total_bw so root-domain and
@@ -16,7 +16,7 @@ bandwidth already admitted on each root domain.
  3 files changed, 100 insertions(+), 50 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index adc206e79ff8..7e5903d3d929 100644
+index 4de8f8a339cf..9589ef653046 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9941,6 +9941,33 @@ tg_schedulable_bw(const struct tg_bandwidth_schedulable_data *d,
@@ -115,7 +115,7 @@ index adc206e79ff8..7e5903d3d929 100644
  tg_bandwidth_server_pick_task(struct sched_dl_entity *dl_se)
  {
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 6b88ce756c4b..553e3ed2854e 100644
+index 2688b30dcb41..38068c9d6c9d 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -255,14 +255,8 @@ void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
@@ -277,10 +277,10 @@ index 6b88ce756c4b..553e3ed2854e 100644
  
  		rcu_read_unlock_sched();
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 9412c4040303..08bed819abb3 100644
+index b025fc941d73..368121661cf6 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -625,7 +625,6 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -626,7 +626,6 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
  		struct sched_dl_entity *parent);
  extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
  extern void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period);

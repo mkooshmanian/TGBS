@@ -1,7 +1,7 @@
-From 39ca4d4643852ea89a14d35a225132fe8ef2cbb1 Mon Sep 17 00:00:00 2001
+From a156d934cce8ab73f69de2292edf6033685a4d71 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:24:31 +0100
-Subject: [PATCH 22/28] sched/tgbs: pull tasks into idle vrq when a server
+Subject: [PATCH 23/31] sched/tgbs: pull tasks into idle vrq when a server
  drains
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ whenever migrable work exists elsewhere in the task group.
  5 files changed, 176 insertions(+), 1 deletion(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index b0f20762bfb4..7c9189f93e22 100644
+index ab88df64a5af..d4eba40a82e6 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2163,6 +2163,9 @@ unsigned long get_wchan(struct task_struct *p)
@@ -160,7 +160,7 @@ index b0f20762bfb4..7c9189f93e22 100644
  					     struct task_struct *p,
  					     s64 delta_exec)
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 7e4f1f0ecfad..8105c218dab5 100644
+index 796a6a9d2fbf..1976a9e1e0ff 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -2773,6 +2773,35 @@ int tg_server_select_dl_cpu(struct task_struct *p, struct task_group *tg, int cp
@@ -228,10 +228,10 @@ index d4a2b36df5e6..568479ed553c 100644
  
  static struct task_struct *fair_server_pick_task(struct sched_dl_entity *dl_se)
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
-index 70d06d92287f..f1fccea8db30 100644
+index d3288d69f7f9..b1c9ec64b202 100644
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
-@@ -1819,6 +1819,27 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
+@@ -1830,6 +1830,27 @@ int tg_server_select_rt_cpu(struct task_struct *p, struct task_group *tg, int cp
  
  	return have_best ? best_cpu : cpu;
  }
@@ -260,10 +260,10 @@ index 70d06d92287f..f1fccea8db30 100644
  
  static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 5d312c4f8598..4476c0ee21fe 100644
+index c8f91f8f0533..a62b9bb69a3d 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -433,6 +433,11 @@ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
+@@ -434,6 +434,11 @@ extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
  extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);
  extern void tg_server_handle_throttle(struct sched_dl_entity *server);
  extern void tg_server_handle_unthrottle(struct sched_dl_entity *server);

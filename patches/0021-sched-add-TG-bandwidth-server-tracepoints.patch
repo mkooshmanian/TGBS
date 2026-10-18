@@ -1,7 +1,7 @@
-From 5bb6cc2490daf2ce0c2b03eff2c09b80fb5fe573 Mon Sep 17 00:00:00 2001
+From 924ebdca8da22b340bcca0858d77a53946370b33 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 26 Nov 2025 10:10:43 +0100
-Subject: [PATCH 20/28] sched: add TG bandwidth server tracepoints
+Subject: [PATCH 21/31] sched: add TG bandwidth server tracepoints
 
 Add tracepoints for TG bandwidth server start/stop, throttle/unthrottle, runtime
 accounting, and pick decisions to ease debugging with cgroup context.
@@ -192,7 +192,7 @@ index 7b2645b50e78..1168899e088c 100644
   * Following tracepoints are not exported in tracefs and provide hooking
   * mechanisms only for testing and debugging purposes.
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 32e03af2acb0..6c2045b2001e 100644
+index 2de8b985d903..c0bdf71458d8 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2188,8 +2188,16 @@ void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags)
@@ -306,7 +306,7 @@ index 32e03af2acb0..6c2045b2001e 100644
  	return p;
  }
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index e5332ff9f8c7..cd9163847cdd 100644
+index 6fd38486d8a0..e2040cc93426 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -1085,8 +1085,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
@@ -337,10 +337,10 @@ index e5332ff9f8c7..cd9163847cdd 100644
  		if (dl_runtime_exceeded(dl_se) &&
  		    (dl_se->flags & SCHED_FLAG_DL_OVERRUN))
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 6d27cb8cad35..50e85eb7bbbf 100644
+index 5d102d371933..34b65cb5a055 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -431,6 +431,8 @@ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64
+@@ -432,6 +432,8 @@ extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64
  extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
  extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
  extern struct task_struct *tg_server_pick_dl_task(struct rq *rq);

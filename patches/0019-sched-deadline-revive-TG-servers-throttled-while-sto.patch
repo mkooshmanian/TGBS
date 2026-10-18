@@ -1,7 +1,7 @@
-From 48b04a5455e921d4055efccce281707abd9aefe2 Mon Sep 17 00:00:00 2001
+From 33368270aaf058a8af68e5dc74c839f2666502a7 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 30 Nov 2025 14:13:23 +0100
-Subject: [PATCH 18/28] sched/deadline: revive TG servers throttled while
+Subject: [PATCH 19/31] sched/deadline: revive TG servers throttled while
  stopped
 
 Handle TG server throttling after it was stopped because its vrq was empty.
@@ -14,7 +14,7 @@ unthrottle deadlock observed in TG bandwidth servers.
  1 file changed, 6 insertions(+)
 
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index e5033ce94fd3..e5332ff9f8c7 100644
+index e59d3a0b033d..6fd38486d8a0 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -1414,6 +1414,12 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_

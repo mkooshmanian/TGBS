@@ -1,7 +1,7 @@
-From 120e0e0dd0e12862a9e10f06bbd483f26656b798 Mon Sep 17 00:00:00 2001
+From 8ab749375535fc91175e9c92fb5c945a4b043418 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:49:21 +0100
-Subject: [PATCH 05/28] sched/deadline: Account TG bandwidth servers in 
+Subject: [PATCH 06/31] sched/deadline: Account TG bandwidth servers in 
  schedulability tests
 
 Account the TG bandwidth server hierarchy in the schedulability checks
@@ -21,7 +21,7 @@ Co-developed-by: Yuri Andriaccio <yurand2000@gmail.com>
  1 file changed, 18 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index ed74f55812b8..a1aa1376951a 100644
+index 5047e4ead73d..0c0df9ba190b 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -212,8 +212,15 @@ void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)

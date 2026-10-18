@@ -1,7 +1,7 @@
-From b2ec492597b252622cb4ba062e4a190f6af6be8c Mon Sep 17 00:00:00 2001
+From 331198f3f03f26e8bb9d813ca4e475d5515a07c1 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 11 Dec 2025 17:06:19 +0100
-Subject: [PATCH 23/28] sched/tgbs: add throttle/unthrottle support for TG
+Subject: [PATCH 24/31] sched/tgbs: add throttle/unthrottle support for TG
  servers via irq_work
 
 Add the TG bandwidth server balancing logic: when a server throttles we push
@@ -36,7 +36,7 @@ index 25991138a647..ac2874f3dba1 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 7c9189f93e22..1d8910709408 100644
+index d4eba40a82e6..4c93aefc70c6 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -39,6 +39,8 @@
@@ -418,10 +418,10 @@ index 7c9189f93e22..1d8910709408 100644
  	vrq->rt.rq = vrq;
  	vrq->dl.rq = vrq;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 4476c0ee21fe..7b1520b5551a 100644
+index a62b9bb69a3d..7c7e6d7c5d1d 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -1258,6 +1258,11 @@ struct rq {
+@@ -1259,6 +1259,11 @@ struct rq {
  
  	struct sched_dl_entity	fair_server;
  

@@ -1,7 +1,7 @@
-From 9f24d207dffe11ccbfc8d2befd28e6219e6d0bd8 Mon Sep 17 00:00:00 2001
+From 6f88922ef150323f6fcb60a88f06ee69e6feba3e Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 22 Mar 2026 16:42:11 +0100
-Subject: [PATCH 28/28] sched/tgbs: add optional root task-group bandwidth
+Subject: [PATCH 29/31] sched/tgbs: add optional root task-group bandwidth
  server
 
 Add an optional TG bandwidth server for the root task group.
@@ -37,12 +37,12 @@ fair-server reservation and the 95% global bandwidth limit.
  include/linux/sched/nohz.h |   6 +
  init/Kconfig               |  12 ++
  init/Makefile              |   3 +-
- kernel/sched/core.c        | 265 ++++++++++++++++++++++++++++++++++++-
+ kernel/sched/core.c        | 282 ++++++++++++++++++++++++++++++++++++-
  kernel/sched/deadline.c    | 103 ++++++++++++--
  kernel/sched/rt.c          |   6 +-
  kernel/sched/sched.h       |  22 +--
  kernel/time/tick-sched.c   |   6 +
- 8 files changed, 397 insertions(+), 26 deletions(-)
+ 8 files changed, 414 insertions(+), 26 deletions(-)
 
 diff --git a/include/linux/sched/nohz.h b/include/linux/sched/nohz.h
 index 0db7f67935fe..9772d49259e0 100644
@@ -109,7 +109,7 @@ index d6f75d8907e0..377ebb02ec08 100644
  
  #
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 39978f318c3a..28335b610e30 100644
+index ea4c45911cd9..e44ce6ce73d2 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2104,6 +2104,51 @@ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
@@ -444,7 +444,7 @@ index 39978f318c3a..28335b610e30 100644
  					return -EINVAL;
  			}
  		}
-@@ -10477,6 +10691,11 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -10476,6 +10690,11 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  		init_tg_dl_se(tg, cpu, cpu_runtime, period);
  	}
  
@@ -456,7 +456,7 @@ index 39978f318c3a..28335b610e30 100644
  	return ret;
  }
  
-@@ -10485,8 +10704,8 @@ int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim)
+@@ -10484,8 +10703,8 @@ int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim)
  	unsigned int sched_flags = reclaim ? SCHED_FLAG_RECLAIM : 0;
  	int cpu;
  
@@ -467,7 +467,30 @@ index 39978f318c3a..28335b610e30 100644
  
  	guard(mutex)(&tg_bandwidth_constraints_mutex);
  	WRITE_ONCE(tg->tg_bandwidth.dl_reclaim, reclaim);
-@@ -10634,6 +10853,11 @@ void sched_online_group(struct task_group *tg, struct task_group *parent)
+@@ -10553,6 +10772,22 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
+ 	if (!dl_period_valid(period))
+ 		return -EINVAL;
+ 
++#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
++	if (tg == &root_task_group) {
++		unsigned long flags;
++
++		guard(mutex)(&tg_bandwidth_constraints_mutex);
++
++		raw_spin_lock_irqsave(&tg->tg_bandwidth.dl_runtime_lock, flags);
++		tg->tg_bandwidth.dl_period = period;
++		raw_spin_unlock_irqrestore(&tg->tg_bandwidth.dl_runtime_lock, flags);
++
++		/* Keep the residual bandwidth, scaling runtime to the new period. */
++		tg_recalc_root_bandwidth();
++		return 0;
++	}
++#endif
++
+ 	runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
+ 
+ 	return tg_set_dl_bandwidth(tg, period, runtime);
+@@ -10636,6 +10871,11 @@ void sched_online_group(struct task_group *tg, struct task_group *parent)
  	spin_unlock_irqrestore(&task_group_lock, flags);
  
  	online_fair_sched_group(tg);
@@ -479,7 +502,7 @@ index 39978f318c3a..28335b610e30 100644
  }
  
  /* RCU callback to free various structures associated with a task group */
-@@ -10652,6 +10876,10 @@ void sched_destroy_group(struct task_group *tg)
+@@ -10654,6 +10894,10 @@ void sched_destroy_group(struct task_group *tg)
  void sched_release_group(struct task_group *tg)
  {
  	unsigned long flags;
@@ -490,7 +513,7 @@ index 39978f318c3a..28335b610e30 100644
  
  	/*
  	 * Unlink first, to avoid walk_tg_tree_from() from finding us (via
-@@ -10670,6 +10898,11 @@ void sched_release_group(struct task_group *tg)
+@@ -10672,6 +10916,11 @@ void sched_release_group(struct task_group *tg)
  	list_del_rcu(&tg->list);
  	list_del_rcu(&tg->siblings);
  	spin_unlock_irqrestore(&task_group_lock, flags);
@@ -502,7 +525,7 @@ index 39978f318c3a..28335b610e30 100644
  }
  
  static void sched_change_group(struct task_struct *tsk)
-@@ -11820,6 +12053,24 @@ static struct cftype cpu_files[] = {
+@@ -11822,6 +12071,25 @@ static struct cftype cpu_files[] = {
  		.read_s64 = cpu_tg_reclaim_read,
  		.write_s64 = cpu_tg_reclaim_write,
  	},
@@ -516,6 +539,7 @@ index 39978f318c3a..28335b610e30 100644
 +		.name = "period_us",
 +		.flags = CFTYPE_ONLY_ON_ROOT,
 +		.read_u64 = cpu_tg_period_read_uint,
++		.write_u64 = cpu_tg_period_write_uint,
 +	},
 +	{
 +		.name = "reclaim",
@@ -528,7 +552,7 @@ index 39978f318c3a..28335b610e30 100644
  #ifdef CONFIG_GROUP_SCHED_WEIGHT
  	{
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 134eb097f0f8..b89d15042035 100644
+index b55fb4372245..6dca8e61b159 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -520,6 +520,7 @@ static void tg_dl_change_bw(struct rq *rq, u64 old_bw, u64 new_bw)
@@ -744,7 +768,7 @@ index 134eb097f0f8..b89d15042035 100644
  
  /*
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
-index 01aba4042de5..458916194cc9 100644
+index a9cf77002882..e5e348b5a892 100644
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
 @@ -19,9 +19,13 @@ int sysctl_sched_rt_period = 1000000;
@@ -763,10 +787,10 @@ index 01aba4042de5..458916194cc9 100644
  #ifdef CONFIG_SYSCTL
  static int sysctl_sched_rr_timeslice = (MSEC_PER_SEC * RR_TIMESLICE) / HZ;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index d5a536893e3c..04372fdebb37 100644
+index 6b9bc55da880..3d401f507fb7 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -626,6 +626,9 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
+@@ -627,6 +627,9 @@ extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
  		struct sched_dl_entity *parent);
  extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtime);
  extern void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period);
@@ -776,7 +800,7 @@ index d5a536893e3c..04372fdebb37 100644
  extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
  extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
  extern long sched_group_tg_runtime(struct task_group *tg);
-@@ -643,7 +646,11 @@ static inline bool tg_uses_bandwidth_server(struct task_group *tg)
+@@ -644,7 +647,11 @@ static inline bool tg_uses_bandwidth_server(struct task_group *tg)
  	if (!tg || !tg->tg_server)
  		return false;
  
@@ -788,7 +812,7 @@ index d5a536893e3c..04372fdebb37 100644
  }
  
  static inline const struct cpumask *tg_active_mask(struct task_group *tg)
-@@ -659,7 +666,7 @@ static inline bool tg_server_cpu_active(struct task_group *tg, int cpu)
+@@ -660,7 +667,7 @@ static inline bool tg_server_cpu_active(struct task_group *tg, int cpu)
  	return cpumask_test_cpu(cpu, tg_active_mask(tg));
  }
  
@@ -797,7 +821,7 @@ index d5a536893e3c..04372fdebb37 100644
  #else
  static inline void free_tg_bandwidth_server(struct task_group *tg) { }
  static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
-@@ -667,6 +674,9 @@ static inline int tg_group_set_active_mask(struct task_group *tg,
+@@ -668,6 +675,9 @@ static inline int tg_group_set_active_mask(struct task_group *tg,
  					   const struct cpumask *mask) { return 0; }
  static inline int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim) { return -EOPNOTSUPP; }
  static inline long sched_group_tg_reclaim(struct task_group *tg) { return 0; }
@@ -807,7 +831,7 @@ index d5a536893e3c..04372fdebb37 100644
  #endif
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -2312,11 +2322,12 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+@@ -2320,11 +2330,12 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  #endif
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -822,7 +846,7 @@ index d5a536893e3c..04372fdebb37 100644
  		p->se.cfs_rq = &tg->tg_server[cpu]->vrq->cfs;
  		p->rt.rt_rq = &tg->tg_server[cpu]->vrq->rt;
  		p->dl.dl_rq = &tg->tg_server[cpu]->vrq->dl;
-@@ -2355,11 +2366,6 @@ static inline struct task_group *task_group(struct task_struct *p)
+@@ -2363,11 +2374,6 @@ static inline struct task_group *task_group(struct task_struct *p)
  #endif /* !CONFIG_CGROUP_SCHED */
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER

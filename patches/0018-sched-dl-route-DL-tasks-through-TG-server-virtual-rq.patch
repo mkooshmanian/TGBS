@@ -1,7 +1,7 @@
-From 76351fdd8d396eba2870095c30938743cdd17efb Mon Sep 17 00:00:00 2001
+From c16c41ed6c7402a212918cb59399dcdf5994e466 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 10 Dec 2025 16:50:53 +0100
-Subject: [PATCH 17/28] sched/dl: route DL tasks through TG server virtual rq
+Subject: [PATCH 18/31] sched/dl: route DL tasks through TG server virtual rq
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -48,7 +48,7 @@ index 3f9845519196..25991138a647 100644
  
  #ifdef CONFIG_RT_MUTEXES
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 4216ed725eec..d78d1fa3d5bc 100644
+index b0c4f0a25843..fc3c7746a24e 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9048,6 +9048,7 @@ void __init sched_init(void)
@@ -78,7 +78,7 @@ index 4216ed725eec..d78d1fa3d5bc 100644
  	tg->tg_server[cpu] = server;
  }
  
-@@ -10043,7 +10049,7 @@ static void sched_change_group(struct task_struct *tsk)
+@@ -10045,7 +10051,7 @@ static void sched_change_group(struct task_struct *tsk)
  	tg = autogroup_task_group(tsk, tg);
  	tsk->sched_task_group = tg;
  
@@ -88,7 +88,7 @@ index 4216ed725eec..d78d1fa3d5bc 100644
  		tsk->sched_class->task_change_group(tsk);
  	else
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 8d9bfe088459..e5033ce94fd3 100644
+index 4be0cade0387..e59d3a0b033d 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -62,6 +62,47 @@ static bool dl_server(struct sched_dl_entity *dl_se)
@@ -508,7 +508,7 @@ index 8d9bfe088459..e5033ce94fd3 100644
  	if (global_rt_runtime() == RUNTIME_INF) {
  		dl_rq->bw_ratio = 1 << RATIO_SHIFT;
  		dl_rq->max_bw = dl_rq->extra_bw = 1 << BW_SHIFT;
-@@ -3554,6 +3795,9 @@ void init_dl_entity(struct sched_dl_entity *dl_se)
+@@ -3557,6 +3798,9 @@ void init_dl_entity(struct sched_dl_entity *dl_se)
  	init_dl_task_timer(dl_se);
  	init_dl_inactive_task_timer(dl_se);
  	__dl_clear_params(dl_se);
@@ -519,10 +519,10 @@ index 8d9bfe088459..e5033ce94fd3 100644
  
  bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr)
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 00a3d10661fe..6d27cb8cad35 100644
+index 657d7950d342..5d102d371933 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -430,6 +430,7 @@ extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
+@@ -431,6 +431,7 @@ extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
  extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
  extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
  extern struct task_struct *tg_server_pick_rt_task(struct rq *rq);
@@ -530,7 +530,7 @@ index 00a3d10661fe..6d27cb8cad35 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -983,6 +984,10 @@ struct dl_rq {
+@@ -984,6 +985,10 @@ struct dl_rq {
  	 * by the GRUB algorithm.
  	 */
  	u64			bw_ratio;
@@ -541,7 +541,7 @@ index 00a3d10661fe..6d27cb8cad35 100644
  };
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -2259,12 +2264,14 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+@@ -2267,12 +2272,14 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  #endif
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -557,7 +557,7 @@ index 00a3d10661fe..6d27cb8cad35 100644
  	}
  #else
  #ifdef CONFIG_FAIR_GROUP_SCHED
-@@ -2581,7 +2588,7 @@ struct sched_class {
+@@ -2589,7 +2596,7 @@ struct sched_class {
  
  	void (*update_curr)(struct rq *rq);
  

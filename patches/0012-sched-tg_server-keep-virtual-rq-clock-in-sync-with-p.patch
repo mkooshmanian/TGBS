@@ -1,7 +1,7 @@
-From 75ef9f774b4a104815916d3d4bca86ff9da839ee Mon Sep 17 00:00:00 2001
+From f9ef7beec2b3379de99ef39c8866fd993d020745 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:04:44 +0100
-Subject: [PATCH 11/28] sched/tg_server: keep virtual rq clock in sync with
+Subject: [PATCH 12/31] sched/tg_server: keep virtual rq clock in sync with
  physical rq
 
 The TG virtual runqueue reuses rq_clock_task(), but its clock never advanced
@@ -19,7 +19,7 @@ with the physical rq for accounting and timer programming.
  4 files changed, 136 insertions(+), 4 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 9a8bbc67089c..cec6feeff413 100644
+index 06b6401c5b34..99b47c7be091 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2082,6 +2082,32 @@ void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf)
@@ -80,7 +80,7 @@ index 9a8bbc67089c..cec6feeff413 100644
  	ns = p->se.sum_exec_runtime;
  	task_rq_unlock(rq, p, &rf);
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 244ca5989ab7..01155ca0c51d 100644
+index c87100a19190..c3a38aaf5831 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -1195,6 +1195,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
@@ -163,10 +163,10 @@ index 5b752324270b..15a70b325e20 100644
  }
  
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 8486b75e264a..d28c5ab7df6e 100644
+index 2206bc6694b1..e41b7f7ca11f 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -424,6 +424,7 @@ extern void sched_init_dl_servers(void);
+@@ -425,6 +425,7 @@ extern void sched_init_dl_servers(void);
  extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
  extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
  extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
@@ -174,7 +174,7 @@ index 8486b75e264a..d28c5ab7df6e 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -2546,15 +2547,59 @@ struct sched_class {
+@@ -2554,15 +2555,59 @@ struct sched_class {
  #endif
  };
  
@@ -236,7 +236,7 @@ index 8486b75e264a..d28c5ab7df6e 100644
  }
  
  static inline void
-@@ -2578,8 +2623,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
+@@ -2586,8 +2631,8 @@ static inline void put_prev_set_next_task(struct rq *rq,
  	if (next == prev)
  		return;
  

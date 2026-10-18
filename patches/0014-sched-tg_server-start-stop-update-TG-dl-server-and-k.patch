@@ -1,7 +1,7 @@
-From 4933ed65a5d01f49795e75451f7b52405655c47d Mon Sep 17 00:00:00 2001
+From a6770963316563209c675d6b20508955ba628c67 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:26:22 +0100
-Subject: [PATCH 13/28] sched/tg_server: start/stop/update TG dl server and
+Subject: [PATCH 14/31] sched/tg_server: start/stop/update TG dl server and
  keep nr_running alive
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ stop the tick while a server runs on the physical rq.
  4 files changed, 145 insertions(+), 6 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index deb33ea460cd..03e37654219a 100644
+index cb0428e454f0..2daecf2bf742 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2162,8 +2162,94 @@ unsigned long get_wchan(struct task_struct *p)
@@ -180,7 +180,7 @@ index deb33ea460cd..03e37654219a 100644
  
  void activate_task(struct rq *rq, struct task_struct *p, int flags)
 diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
-index 01155ca0c51d..8d9bfe088459 100644
+index c3a38aaf5831..4be0cade0387 100644
 --- a/kernel/sched/deadline.c
 +++ b/kernel/sched/deadline.c
 @@ -1954,11 +1954,22 @@ static inline
@@ -243,10 +243,10 @@ index 15a70b325e20..24467b78fbb1 100644
  		/* If not task, account the time against donor se  */
  		se->sum_exec_runtime += delta_exec;
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index d28c5ab7df6e..f19b96aa09c8 100644
+index e41b7f7ca11f..02ccdda7582e 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -425,6 +425,9 @@ extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
+@@ -426,6 +426,9 @@ extern struct rq *vrq_of_tg(struct task_group *tg, int cpu);
  extern void tg_server_vrq_lock(struct rq *rq, struct rq_flags *rf);
  extern void tg_server_vrq_unlock(struct rq *rq, struct rq_flags *rf);
  u64 sync_vrq_clock(struct rq *vrq, struct rq *phys);

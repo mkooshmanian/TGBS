@@ -1,7 +1,7 @@
-From 3d3ac86e610fef87031e448c980b892b77f48f17 Mon Sep 17 00:00:00 2001
+From b0863adb6f3ba21de55b7720e56dc3830dc18098 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Thu, 19 Mar 2026 11:23:37 +0100
-Subject: [PATCH 09/28] sched/tg_server: factor basic TG server predicates and
+Subject: [PATCH 10/31] sched/tg_server: factor basic TG server predicates and
  cpu helpers
 
 Introduce shared helpers for checking whether a task or task_group uses a TG
@@ -13,7 +13,7 @@ paths.
  2 files changed, 27 insertions(+), 2 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index d9c9580f7db9..77d7ecabc13b 100644
+index 012ebb9cc326..98bde478d669 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2058,7 +2058,7 @@ struct rq *vrq_of_tg(struct task_group *tg, int cpu)
@@ -26,10 +26,10 @@ index d9c9580f7db9..77d7ecabc13b 100644
  
  	server = READ_ONCE(tg->tg_server[cpu]);
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 45e4b229bbfd..72e643505957 100644
+index 03da2b16b52a..fab17f1e01dd 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -591,6 +591,26 @@ extern long sched_group_tg_period(struct task_group *tg);
+@@ -592,6 +592,26 @@ extern long sched_group_tg_period(struct task_group *tg);
  
  extern void free_tg_bandwidth_server(struct task_group *tg);
  extern int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent);
@@ -56,7 +56,7 @@ index 45e4b229bbfd..72e643505957 100644
  #else
  static inline void free_tg_bandwidth_server(struct task_group *tg) { }
  static inline int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent) { return 1; }
-@@ -2233,13 +2253,18 @@ static inline struct task_group *task_group(struct task_struct *p)
+@@ -2241,13 +2261,18 @@ static inline struct task_group *task_group(struct task_struct *p)
  #endif /* !CONFIG_CGROUP_SCHED */
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER

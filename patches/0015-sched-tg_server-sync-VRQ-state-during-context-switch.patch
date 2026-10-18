@@ -1,7 +1,7 @@
-From b92812cd9d004ddcd997d53cf462a14e1ae15403 Mon Sep 17 00:00:00 2001
+From 329a3fc69961924f9e5ba8477c4948862f340e17 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:36:19 +0100
-Subject: [PATCH 14/28] sched/tg_server: sync VRQ state during context switches
+Subject: [PATCH 15/31] sched/tg_server: sync VRQ state during context switches
  and wakeup preempt
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -17,7 +17,7 @@ in sync with the physical rq for preemption decisions.
  2 files changed, 33 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 03e37654219a..cbacb114df16 100644
+index 2daecf2bf742..bbe8501ec112 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -2404,10 +2404,37 @@ void check_class_changed(struct rq *rq, struct task_struct *p,
@@ -62,10 +62,10 @@ index 03e37654219a..cbacb114df16 100644
  
  	/*
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index f19b96aa09c8..4e7171013d6c 100644
+index 02ccdda7582e..760d1b5a8adc 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -2585,6 +2585,9 @@ __set_next_task(struct rq *rq, struct task_struct *next, bool first)
+@@ -2593,6 +2593,9 @@ __set_next_task(struct rq *rq, struct task_struct *next, bool first)
  		tg_server_vrq_lock(task_rq, &vrf);
  		locked = true;
  		sync_vrq_clock(task_rq, rq);

@@ -1,7 +1,7 @@
-From bde15213c5fb69d6e20299182e5231c75db0235a Mon Sep 17 00:00:00 2001
+From 72c8d96b273cbf490ea26fc7b4ee7e080024ff89 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:55:56 +0100
-Subject: [PATCH 16/28] sched/rt: route RT tasks through TG server virtual rq
+Subject: [PATCH 17/31] sched/rt: route RT tasks through TG server virtual rq
 
 Attach RT sched_entities to the server virtual runqueue so bandwidth servers
 can reuse the RT picker. Cache the rt_rq pointer in sched_rt_entity, provide
@@ -12,11 +12,11 @@ Expose tg_server_pick_rt_task(), call it before the FAIR picker, and teach
 task_is_throttled_rt() to look at the server vrq when present so server
 managed groups obey throttling.
 ---
- include/linux/sched.h |  8 +++--
- kernel/sched/core.c   |  6 ++++
- kernel/sched/rt.c     | 69 ++++++++++++++++++++++++++++++++++++++++---
- kernel/sched/sched.h  | 10 +++++--
- 4 files changed, 85 insertions(+), 8 deletions(-)
+ include/linux/sched.h |  8 +++-
+ kernel/sched/core.c   |  6 +++
+ kernel/sched/rt.c     | 96 ++++++++++++++++++++++++++++++++++++++++---
+ kernel/sched/sched.h  | 10 ++++-
+ 4 files changed, 111 insertions(+), 9 deletions(-)
 
 diff --git a/include/linux/sched.h b/include/linux/sched.h
 index 284fc0eb0570..3f9845519196 100644
@@ -40,7 +40,7 @@ index 284fc0eb0570..3f9845519196 100644
  	struct rt_rq			*my_q;
  #endif
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 16fac772e1ad..4216ed725eec 100644
+index 1d5cdb7957a0..b0c4f0a25843 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9047,6 +9047,7 @@ void __init sched_init(void)
@@ -71,7 +71,7 @@ index 16fac772e1ad..4216ed725eec 100644
  }
  
 diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
-index 7936d4333731..d6bca40acf22 100644
+index 7936d4333731..04f6c19535e2 100644
 --- a/kernel/sched/rt.c
 +++ b/kernel/sched/rt.c
 @@ -94,7 +94,7 @@ void init_rt_rq(struct rt_rq *rt_rq)
@@ -149,7 +149,32 @@ index 7936d4333731..d6bca40acf22 100644
  
  static inline bool need_pull_rt_task(struct rq *rq, struct task_struct *prev)
  {
-@@ -1707,6 +1755,13 @@ static struct task_struct *pick_task_rt(struct rq *rq)
+@@ -383,6 +431,12 @@ static void pull_rt_task(struct rq *);
+ 
+ static inline void rt_queue_push_tasks(struct rq *rq)
+ {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	/* TGBS balances virtual runqueues separately from physical runqueues. */
++	if (rq_is_virtual(rq))
++		return;
++#endif
++
+ 	if (!has_pushable_tasks(rq))
+ 		return;
+ 
+@@ -391,6 +445,11 @@ static inline void rt_queue_push_tasks(struct rq *rq)
+ 
+ static inline void rt_queue_pull_task(struct rq *rq)
+ {
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	if (rq_is_virtual(rq))
++		return;
++#endif
++
+ 	queue_balance_callback(rq, &per_cpu(rt_pull_head, rq->cpu), pull_rt_task);
+ }
+ 
+@@ -1707,6 +1766,13 @@ static struct task_struct *pick_task_rt(struct rq *rq)
  	return p;
  }
  
@@ -163,7 +188,37 @@ index 7936d4333731..d6bca40acf22 100644
  static void put_prev_task_rt(struct rq *rq, struct task_struct *p, struct task_struct *next)
  {
  	struct sched_rt_entity *rt_se = &p->rt;
-@@ -2553,9 +2608,15 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
+@@ -1936,6 +2002,12 @@ static int push_rt_task(struct rq *rq, bool pull)
+ 	struct rq *lowest_rq;
+ 	int ret = 0;
+ 
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	/* Also cover direct push attempts from task_woken_rt(). */
++	if (rq_is_virtual(rq))
++		return 0;
++#endif
++
+ 	if (!rq->rt.overloaded)
+ 		return 0;
+ 
+@@ -2232,7 +2304,15 @@ static void pull_rt_task(struct rq *this_rq)
+ 	bool resched = false;
+ 	struct task_struct *p, *push_task;
+ 	struct rq *src_rq;
+-	int rt_overload_count = rt_overloaded(this_rq);
++	int rt_overload_count;
++
++#ifdef CONFIG_TG_BANDWIDTH_SERVER
++	/* balance_rt() can invoke the pull directly, without a callback. */
++	if (rq_is_virtual(this_rq))
++		return;
++#endif
++
++	rt_overload_count = rt_overloaded(this_rq);
+ 
+ 	if (likely(!rt_overload_count))
+ 		return;
+@@ -2553,9 +2633,15 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
  {
  	struct rt_rq *rt_rq;
  
@@ -181,10 +236,10 @@ index 7936d4333731..d6bca40acf22 100644
  	rt_rq = &cpu_rq(cpu)->rt;
  #endif
 diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
-index 15aa424e69b6..00a3d10661fe 100644
+index b1ee03d24f9d..657d7950d342 100644
 --- a/kernel/sched/sched.h
 +++ b/kernel/sched/sched.h
-@@ -429,6 +429,7 @@ extern void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags);
+@@ -430,6 +430,7 @@ extern void tg_server_enqueue(struct rq *vrq, struct task_struct *p, int flags);
  extern void tg_server_dequeue(struct rq *vrq, struct task_struct *p);
  extern void tg_server_account_runtime(struct rq *rq, struct task_struct *p, s64 delta_exec);
  extern struct task_struct *tg_server_pick_fair_task(struct rq *rq);
@@ -192,7 +247,7 @@ index 15aa424e69b6..00a3d10661fe 100644
  #endif
  
  extern void dl_server_update_idle_time(struct rq *rq,
-@@ -901,6 +902,10 @@ struct rt_rq {
+@@ -902,6 +903,10 @@ struct rt_rq {
  
  	int			rt_queued;
  
@@ -203,7 +258,7 @@ index 15aa424e69b6..00a3d10661fe 100644
  #ifdef CONFIG_RT_GROUP_SCHED
  	int			rt_throttled;
  	u64			rt_time; /* consumed RT time, goes up in update_curr_rt */
-@@ -909,9 +914,8 @@ struct rt_rq {
+@@ -910,9 +915,8 @@ struct rt_rq {
  	raw_spinlock_t		rt_runtime_lock;
  
  	unsigned int		rt_nr_boosted;
@@ -214,7 +269,7 @@ index 15aa424e69b6..00a3d10661fe 100644
  #ifdef CONFIG_CGROUP_SCHED
  	struct task_group	*tg; /* this tg has "this" rt_rq on given CPU for runnable entities */
  #endif
-@@ -2257,8 +2261,10 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+@@ -2265,8 +2269,10 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
  	if (!tg || tg == &root_task_group) {
  		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
