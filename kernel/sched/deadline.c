@@ -441,21 +441,22 @@ static void dl_change_utilization(struct task_struct *p, u64 new_bw)
 }
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
-static bool is_active_sched_group(struct task_group *tg)
+static bool is_active_sched_group(struct task_group *tg, int cpu)
 {
 	struct task_group *child;
 	bool is_active = 1;
 
 	// if there are no children, this is a leaf group, thus it is active
+	rcu_read_lock();
 	list_for_each_entry_rcu(child, &tg->children, siblings) {
-		if (child->tg_bandwidth.dl_runtime > 0) {
+		if (tg_cpu_has_runtime(child, cpu))
 			is_active = 0;
-		}
 	}
+	rcu_read_unlock();
 	return is_active;
 }
 
-static bool sched_group_has_active_siblings(struct task_group *tg)
+static bool sched_group_has_active_siblings(struct task_group *tg, int cpu)
 {
 	struct task_group *sibling;
 	bool has_active = false;
@@ -468,7 +469,7 @@ static bool sched_group_has_active_siblings(struct task_group *tg)
 		if (sibling == tg)
 			continue;
 
-		if (READ_ONCE(sibling->tg_bandwidth.dl_runtime)) {
+		if (tg_cpu_has_runtime(sibling, cpu)) {
 			has_active = true;
 			break;
 		}
@@ -578,7 +579,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	dl_rq = dl_rq_of_se(dl_se);
 	BUG_ON(!vrq);
 
-	is_active_group = is_active_sched_group(tg);
+	is_active_group = is_active_sched_group(tg, cpu);
 
 	raw_spin_rq_lock_irqsave(rq, flags);
 	/* Secondary rqs have no current task yet during sched_init(). */
@@ -619,7 +620,7 @@ void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period)
 	parent = dl_se->parent;
 	/* Direct children of root stay top-level servers on the physical rq. */
 	if (tg->parent && tg->parent != &root_task_group && parent &&
-	    !sched_group_has_active_siblings(tg)) {
+	    !sched_group_has_active_siblings(tg, cpu)) {
 		if (!runtime && old_runtime)
 			__add_rq_bw(parent->dl_bw, dl_rq);
 		else if (runtime && !old_runtime)
