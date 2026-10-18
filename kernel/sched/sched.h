@@ -623,6 +623,8 @@ static inline struct task_group *css_tg(struct cgroup_subsys_state *css)
 extern int tg_nop(struct task_group *tg, void *data);
 
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
+extern struct mutex tg_bandwidth_constraints_mutex;
+
 extern void init_tg_bandwidth_entry(struct task_group *tg, struct rq *vrq,
 		struct sched_dl_entity *server, int cpu,
 		struct sched_dl_entity *parent);
@@ -630,10 +632,10 @@ extern void init_tg_bandwidth(struct dl_bandwidth *dl_bw, u64 period, u64 runtim
 extern void init_tg_dl_se(struct task_group *tg, int cpu, u64 runtime, u64 period);
 #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
 extern void tg_recalc_root_bandwidth(void);
+extern int tg_validate_root_bandwidth(void);
 #endif
 extern int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us);
 extern int sched_group_set_tg_period(struct task_group *tg, u64 period_us);
-extern long sched_group_tg_runtime(struct task_group *tg);
 extern long sched_group_tg_period(struct task_group *tg);
 extern int sched_group_set_tg_reclaim(struct task_group *tg, bool reclaim);
 extern long sched_group_tg_reclaim(struct task_group *tg);
