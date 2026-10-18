@@ -504,6 +504,7 @@ struct task_group {
 #ifdef CONFIG_TG_BANDWIDTH_SERVER
 	struct sched_dl_entity **tg_server;
 	struct dl_bandwidth tg_bandwidth;
+	u64 *tg_runtime_overrides;
 	cpumask_var_t active_server_mask;
 #endif
 
@@ -665,6 +666,49 @@ static inline const struct cpumask *tg_active_mask(struct task_group *tg)
 static inline bool tg_server_cpu_active(struct task_group *tg, int cpu)
 {
 	return cpumask_test_cpu(cpu, tg_active_mask(tg));
+}
+
+struct tg_cpu_bandwidth {
+	u64 period;
+	u64 runtime;
+	bool active;
+};
+
+/*
+ * The caller keeps tg alive, through a CSS reference or an RCU read lock.
+ * Readers may hold an rq lock. Writers must release dl_runtime_lock before
+ * acquiring an rq lock; never hold two groups' dl_runtime_lock locks at once.
+ */
+static inline struct tg_cpu_bandwidth tg_cpu_bandwidth_read(struct task_group *tg, int cpu)
+{
+	struct dl_bandwidth *dl_bw = &tg->tg_bandwidth;
+	struct tg_cpu_bandwidth bandwidth;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&dl_bw->dl_runtime_lock, flags);
+	bandwidth.period = dl_bw->dl_period;
+	bandwidth.runtime = tg->tg_runtime_overrides ?
+		tg->tg_runtime_overrides[cpu] : RUNTIME_INF;
+	/* RUNTIME_INF denotes inheritance from the group's default runtime. */
+	if (bandwidth.runtime == RUNTIME_INF)
+		bandwidth.runtime = dl_bw->dl_runtime;
+	bandwidth.active = tg_server_cpu_active(tg, cpu);
+	raw_spin_unlock_irqrestore(&dl_bw->dl_runtime_lock, flags);
+
+	return bandwidth;
+}
+
+/* Return the configured runtime, even when this CPU is inactive. */
+static inline u64 tg_cpu_runtime(struct task_group *tg, int cpu)
+{
+	return tg_cpu_bandwidth_read(tg, cpu).runtime;
+}
+
+static inline bool tg_cpu_has_runtime(struct task_group *tg, int cpu)
+{
+	struct tg_cpu_bandwidth bandwidth = tg_cpu_bandwidth_read(tg, cpu);
+
+	return bandwidth.active && bandwidth.runtime;
 }
 
 extern bool task_uses_tg_bandwidth_server(struct task_struct *p);
