@@ -20,6 +20,7 @@ Scheduler
     sched-util-clamp
     sched-nice-design
     sched-rt-group
+    sched-tgbs
     sched-stats
     sched-ext
     sched-debug

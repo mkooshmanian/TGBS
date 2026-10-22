@@ -1123,6 +1123,21 @@ the following section for details. Only the cpu controller is affected by
 CONFIG_RT_GROUP_SCHED. Other controllers can be used for the resource control of
 realtime processes irrespective of CONFIG_RT_GROUP_SCHED.
 
+Task group bandwidth server
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With ``CONFIG_TG_BANDWIDTH_SERVER`` enabled, the CPU controller provides a
+Constant Bandwidth Server (CBS) reservation for each task group on each CPU.
+Fair, real-time and deadline tasks in a group share the corresponding server's
+budget. This configuration replaces fair and RT group scheduling and provides
+``cpu.runtime_us``, ``cpu.period_us`` and ``cpu.reclaim`` instead of the
+fair-group weight and bandwidth controls.
+
+See :ref:`sched-tgbs` for the reservation model, control file formats,
+per-CPU runtime overrides, admission constraints and configuration examples.
+``CONFIG_ROOT_TG_BANDWIDTH_SERVER`` optionally extends this mechanism to the
+root CPU cgroup, with runtime derived from residual bandwidth.
+
 
 CPU Interface Files
 ~~~~~~~~~~~~~~~~~~~

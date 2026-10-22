@@ -1,0 +1,270 @@
+.. SPDX-License-Identifier: GPL-2.0
+
+.. _sched-tgbs:
+
+===========================
+Task group bandwidth server
+===========================
+
+Overview
+========
+
+The task group bandwidth server (TGBS) provides CPU bandwidth isolation
+between CPU cgroups using Constant Bandwidth Servers (CBS). Each task group
+has a deadline server and a virtual runqueue for each CPU. Tasks retain
+their scheduling policy, but their execution consumes the budget of the
+group's server on that CPU.
+
+This allows a group containing fair, real-time and deadline tasks to share
+one reservation. A busy group exhausts its own budget instead of consuming
+the bandwidth reserved for another group. Within a virtual runqueue, tasks
+are selected in scheduling-class order: deadline, real-time, then fair.
+Priorities and nice values select tasks within the group; competition
+between servers uses Earliest Deadline First (EDF).
+
+TGBS uses the CBS mechanisms described in
+:doc:`sched-deadline`. It is configured through the cgroup v2 CPU
+controller, as described in :ref:`cgroup-v2-cpu`.
+
+Kernel configuration
+====================
+
+Enable ``CONFIG_CGROUPS``, ``CONFIG_CGROUP_SCHED`` and
+``CONFIG_TG_BANDWIDTH_SERVER``. The latter requires
+``CONFIG_FAIR_GROUP_SCHED``, ``CONFIG_RT_GROUP_SCHED`` and
+``CONFIG_SCHED_CLASS_EXT`` to be disabled. TGBS replaces the fair and RT
+group scheduling mechanisms in this configuration.
+
+``CONFIG_ROOT_TG_BANDWIDTH_SERVER`` additionally places tasks in the root
+CPU cgroup behind dedicated per-CPU servers. Its behavior is described in
+`Root task group`_ below.
+
+The TGBS control files are registered for cgroup v2 only. They are not
+available through the cgroup v1 CPU controller. The fair-group controls
+``cpu.weight`` and ``cpu.max`` are not provided by TGBS.
+
+Reservation model
+=================
+
+A server has a runtime Q and a period P, with an implicit relative deadline
+equal to P. Its reserved bandwidth is Q / P. When tasks in the group run
+on a CPU, they consume that CPU's server budget. Once this budget is
+exhausted, the server is throttled and tasks served by it cannot run on
+that CPU until replenishment. Other CPUs have independent server budgets.
+
+The server uses CBS activation, deadline and replenishment rules. A period
+is a reservation parameter, rather than a globally aligned wall-clock
+window. The budget need not be delivered as one contiguous time slice.
+When reclaiming is enabled, actual execution can exceed the nominal budget
+by using otherwise unused bandwidth.
+
+Budgets are per CPU, rather than a single quota shared across all CPUs.
+For example, Q = 20000 us and P = 100000 us reserves 20% on each active
+CPU. On four CPUs this represents 0.8 CPU of aggregate reserved bandwidth,
+provided enough tasks can execute in parallel. Pinning a single task to
+one CPU does not let it consume the other CPUs' budgets.
+
+The server's active CPU mask follows the cgroup's effective cpuset CPUs,
+intersected with active CPUs and the parent group's active mask. A server
+outside that mask has no active reservation. Runtime overrides remain
+configured when a CPU is outside the mask. Task affinity further restricts
+where a task can execute; it does not change the group's reservation.
+
+TGBS reserves CPU execution time. Application response times also depend on
+the scheduling policies within the group, blocking and the choice of
+reservation parameters. In particular, assigning a server does not change
+individual tasks into ``SCHED_DEADLINE`` tasks or replace their own deadline
+parameters.
+
+Control files
+=============
+
+The following files appear in non-root cgroups when the CPU controller is
+enabled in the parent's ``cgroup.subtree_control``. All interface time
+values are in microseconds.
+
+cpu.runtime_us
+--------------
+
+This read-write file contains a default runtime and optional per-CPU
+overrides. A newly created group has a default runtime of zero and no
+overrides. Configure a positive runtime before placing workloads in it;
+a zero-runtime server cannot execute tasks.
+
+Reading the file reports the default followed by explicitly configured
+overrides, one per line. CPUs without an override use the default::
+
+  default 20000
+  2 30000
+  3 0
+
+This reserves 20000 us on CPUs without an override, 30000 us on CPU 2,
+and no runtime on CPU 3, subject to the active CPU mask.
+
+Each write accepts exactly one of these forms::
+
+  RUNTIME
+  default RUNTIME
+  CPU RUNTIME
+  CPU default
+
+The first two forms update the default without clearing overrides. The
+third sets an override for a possible CPU, identified by its decimal CPU
+number. The fourth removes that CPU's override so it uses the default
+again. For example::
+
+  echo 20000 > cpu.runtime_us
+  echo '2 30000' > cpu.runtime_us
+  echo '2 default' > cpu.runtime_us
+
+Runtime must not exceed the group's period, including for CPUs outside the
+active mask. Negative runtime values are treated as zero; ``-1`` does not
+mean unlimited runtime. The string ``max`` is not accepted.
+
+With deadline admission control enabled, removing the last configured
+nonzero runtime from a group containing tasks fails with ``EBUSY``.
+Child reservations can also prevent reducing a parent's runtime.
+
+cpu.period_us
+-------------
+
+This read-write file sets the common period for all of the group's
+per-CPU servers. A new group copies its parent's period at creation;
+subsequent changes to the parent do not automatically change the child's
+period. The root group's initial period is 1000000 us.
+
+Periods must be nonzero and within the deadline scheduler's limits,
+controlled by ``/proc/sys/kernel/sched_deadline_period_min_us`` and
+``/proc/sys/kernel/sched_deadline_period_max_us``. Their defaults are
+100 us and 4194304 us, respectively. A period change must also satisfy
+the runtime and admission constraints.
+
+Runtime and period are written separately. To shorten a period below the
+current runtime, reduce the runtime first. To increase runtime beyond the
+current period, increase the period first. Per-CPU overrides must also
+fit within the new period.
+
+cpu.reclaim
+-----------
+
+This read-write file accepts ``0`` or ``1`` and defaults to ``0`` for a
+new group. Writing ``1`` sets ``SCHED_FLAG_RECLAIM`` on the group's
+servers, enabling the deadline scheduler's GRUB bandwidth reclaiming
+mechanism. Writing ``0`` disables it.
+
+Reclaiming allows servers to use available unused bandwidth. It does not
+increase their configured reservations or relax admission constraints.
+With reclaiming enabled, Q / P is not a strict cap on observed CPU usage.
+See :doc:`sched-deadline` for the bandwidth reclaiming algorithm.
+
+Hierarchy and admission control
+===============================
+
+Reservations are checked per CPU using the configured runtime on that CPU
+and the active CPU masks. For every non-root parent, the sum of its direct
+children's bandwidths must not exceed its own bandwidth::
+
+  sum(Q_child[cpu] / P_child) <= Q_parent[cpu] / P_parent
+
+Children may use different periods. Configure parent capacity before
+allocating child reservations, and reduce child reservations before
+shrinking the parent. This is an admission constraint; execution is
+charged to the server of the task's own group. A child's execution does
+not consume the root task group's residual budget.
+
+At the root, direct child reservations are additionally checked against
+the root domain's global deadline capacity, including existing non-TGBS
+deadline reservations. The global limit is derived from
+``sched_rt_runtime_us`` and ``sched_rt_period_us``. Without a root TGBS
+server, the sum of direct child bandwidths is also limited to 100% on each
+CPU.
+
+Writes that violate runtime or hierarchical bandwidth constraints fail
+with ``EINVAL``. Insufficient global deadline capacity causes ``EBUSY``.
+The CPU controller's cgroup v2 topology rules, including the restriction
+on processes in non-root domain cgroups distributing CPU to children,
+still apply; see :doc:`/admin-guide/cgroup-v2`.
+
+Root task group
+===============
+
+Without ``CONFIG_ROOT_TG_BANDWIDTH_SERVER``, tasks in the root CPU cgroup
+remain on the physical runqueues and the root has no TGBS control files.
+
+With that option enabled, root tasks use their own per-CPU servers and
+virtual runqueues. Idle and stop-class tasks are excluded. Direct children
+of the root continue to use separate servers on the physical runqueue.
+
+Root runtime is derived automatically from the global deadline bandwidth
+limit minus the sum of direct child reservations on each CPU::
+
+  U_root[cpu] = U_global - sum(U_child[cpu])
+  Q_root[cpu] = P_root * U_root[cpu]
+
+The root's ``cpu.runtime_us`` is read-only. Its default line represents
+the runtime before subtracting child reservations; per-CPU lines report
+different residual runtimes. The root's ``cpu.period_us`` and
+``cpu.reclaim`` remain writable. When the calculation would assign 100%
+of a CPU to the root server, a small guard is subtracted from its runtime
+to allow for timer and accounting latency.
+
+``/proc/sys/kernel/sched_tg_root_min_percent`` sets a minimum root
+reservation as a percentage of one full CPU. It defaults to 5 and accepts
+values from 0 to 100, subject to available bandwidth. Admission of direct
+child reservations must preserve this minimum on every CPU. Raising the
+minimum fails with ``EBUSY`` if existing reservations leave insufficient
+root bandwidth. The minimum changes admission constraints; the root
+continues to receive all residual bandwidth.
+
+For example, with the default 95% global deadline limit and a direct child
+reserving 20% on a CPU, the root receives approximately 75% on that CPU.
+The minimum of 5% is measured against the full CPU, not against the 95%
+global limit.
+
+Example
+=======
+
+The following commands assume a writable cgroup v2 mount at
+``/sys/fs/cgroup``, with ``cpu`` available in ``cgroup.controllers``, and
+enough unreserved deadline bandwidth. Run them as root. On a hierarchy
+managed by system software, use a delegated subtree and first provision
+its parent reservation instead.
+
+Create a group reserving 20% on each of its active CPUs, then start a
+workload in it::
+
+  cd /sys/fs/cgroup
+  echo +cpu > cgroup.subtree_control
+  mkdir tgbs-example
+  echo 100000 > tgbs-example/cpu.period_us
+  echo 20000 > tgbs-example/cpu.runtime_us
+  echo 0 > tgbs-example/cpu.reclaim
+  sh -c 'echo $$ > /sys/fs/cgroup/tgbs-example/cgroup.procs; exec sleep 60'
+
+Replace ``sleep 60`` with the workload command. It inherits membership
+after the shell moves itself into the group. Once the group is empty,
+remove it with ``rmdir /sys/fs/cgroup/tgbs-example``.
+
+For a CPU-specific reservation, set an override before starting the
+workload, for example ``echo '2 30000' > tgbs-example/cpu.runtime_us``.
+This requires CPU 2 to be a possible CPU and sufficient admission capacity;
+the reservation is active only while CPU 2 is in the group's active mask.
+
+Observability
+=============
+
+Read ``cpu.runtime_us``, ``cpu.period_us`` and ``cpu.reclaim`` to inspect
+the configured reservation. ``cpuset.cpus.effective`` shows the effective
+cpuset CPU placement when the cpuset controller is available.
+
+With tracing enabled, TGBS provides these scheduler trace events:
+
+* ``sched:sched_tg_server_start`` and ``sched:sched_tg_server_stop``;
+* ``sched:sched_tg_server_throttle`` and ``sched:sched_tg_server_unthrottle``;
+* ``sched:sched_tg_server_runtime``;
+* ``sched:sched_tg_server_pick``.
+
+The events identify the cgroup and CPU. Budget events include server
+runtime and deadline values in nanoseconds. Use the throttle/unthrottle
+events to observe budget exhaustion and replenishment; the CFS bandwidth
+throttling counters are not TGBS counters.

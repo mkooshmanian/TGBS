@@ -1166,6 +1166,7 @@ config TG_BANDWIDTH_SERVER
 	  Internally this relies on SCHED_DEADLINE mechanisms to implement
 	  the Constant Bandwidth Server logic at the cgroup/task_group scope
 	  rather than at per-task granularity.
+	  See Documentation/scheduler/sched-tgbs.rst for more information.
 
 config ROOT_TG_BANDWIDTH_SERVER
 	bool "Root task group bandwidth server"
