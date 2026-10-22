@@ -9986,6 +9986,8 @@ static unsigned long tg_effective_bw_on_cpu(struct task_group *tg, int cpu,
 }
 
 #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+static unsigned int sysctl_sched_tg_root_min_percent = 5;
+
 static unsigned long tg_root_dl_bandwidth_limit(void)
 {
 	if (global_rt_runtime() == RUNTIME_INF)
@@ -10013,6 +10015,30 @@ static u64 tg_root_bandwidth_runtime(u64 period, unsigned long bandwidth)
 	}
 
 	return runtime;
+}
+
+static bool tg_root_bandwidth_below_min(unsigned long used,
+					unsigned int min_percent, u64 period)
+{
+	unsigned long total_bw = tg_root_dl_bandwidth_limit();
+	unsigned long residual = total_bw > used ? total_bw - used : 0;
+	u64 runtime = tg_root_bandwidth_runtime(period, residual);
+	u64 min_runtime = div64_u64(to_ratio(100, min_percent) * period, BW_UNIT);
+
+	return runtime < min_runtime;
+}
+
+static int tg_root_children_bandwidth_limit(unsigned int min_percent,
+					    unsigned long *limit)
+{
+	unsigned long min_bw = to_ratio(100, min_percent);
+	unsigned long total_bw = tg_root_dl_bandwidth_limit();
+
+	if (min_bw > total_bw)
+		return -EBUSY;
+
+	*limit = total_bw - min_bw;
+	return 0;
 }
 #endif
 
@@ -10184,15 +10210,26 @@ static unsigned long tg_root_children_bandwidth_sum(int cpu)
 	return sum;
 }
 
-int tg_validate_root_bandwidth(void)
+static int tg_validate_root_min_bandwidth(unsigned int min_percent, u64 period)
 {
-	unsigned long limit = tg_root_dl_bandwidth_limit();
+	unsigned long limit;
 	int cpu, ret = 0;
 
 	lockdep_assert_held(&tg_bandwidth_constraints_mutex);
+	ret = tg_root_children_bandwidth_limit(min_percent, &limit);
+	if (ret)
+		return ret;
+
+	/* Releasing the last child reservation must also preserve the minimum. */
+	if (tg_root_bandwidth_below_min(0, min_percent, period))
+		return -EBUSY;
+
 	rcu_read_lock();
 	for_each_possible_cpu(cpu) {
-		if (tg_root_children_bandwidth_sum(cpu) > limit) {
+		unsigned long used = tg_root_children_bandwidth_sum(cpu);
+
+		if (used > limit ||
+		    tg_root_bandwidth_below_min(used, min_percent, period)) {
 			ret = -EBUSY;
 			break;
 		}
@@ -10201,6 +10238,61 @@ int tg_validate_root_bandwidth(void)
 
 	return ret;
 }
+
+int tg_validate_root_bandwidth(void)
+{
+	return tg_validate_root_min_bandwidth(sysctl_sched_tg_root_min_percent,
+					      root_task_group.tg_bandwidth.dl_period);
+}
+
+#ifdef CONFIG_SYSCTL
+static int sched_tg_root_min_handler(const struct ctl_table *table, int write,
+				     void *buffer, size_t *lenp, loff_t *ppos)
+{
+	unsigned int min_percent;
+	const struct ctl_table tmp = {
+		.data = &min_percent,
+		.maxlen = table->maxlen,
+		.extra1 = table->extra1,
+		.extra2 = table->extra2,
+	};
+	int ret;
+
+	guard(mutex)(&tg_bandwidth_constraints_mutex);
+	min_percent = sysctl_sched_tg_root_min_percent;
+	ret = proc_douintvec_minmax(&tmp, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	ret = tg_validate_root_min_bandwidth(min_percent,
+					  root_task_group.tg_bandwidth.dl_period);
+	if (ret)
+		return ret;
+
+	/* The root already owns the residual bandwidth; only admission changes. */
+	sysctl_sched_tg_root_min_percent = min_percent;
+	return 0;
+}
+
+static const struct ctl_table sched_tg_root_sysctls[] = {
+	{
+		.procname	= "sched_tg_root_min_percent",
+		.data		= &sysctl_sched_tg_root_min_percent,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= sched_tg_root_min_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE_HUNDRED,
+	},
+};
+
+static int __init sched_tg_root_sysctl_init(void)
+{
+	register_sysctl_init("kernel", sched_tg_root_sysctls);
+	return 0;
+}
+late_initcall(sched_tg_root_sysctl_init);
+#endif /* CONFIG_SYSCTL */
 
 /* Called with the constraints mutex held, or before scheduling starts. */
 static void tg_prepare_root_bandwidth(u64 period)
@@ -10692,7 +10784,13 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
 
 	if (tg == &root_task_group) {
 #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
-		unsigned long limit = tg_root_dl_bandwidth_limit();
+		unsigned long limit;
+		int ret;
+
+		ret = tg_root_children_bandwidth_limit(sysctl_sched_tg_root_min_percent,
+						       &limit);
+		if (ret)
+			return ret;
 #else
 		unsigned long limit = BW_UNIT;
 #endif
@@ -10710,6 +10808,11 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
 				if (sum > limit)
 					return -EINVAL;
 			}
+#ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
+			if (tg_root_bandwidth_below_min(sum, sysctl_sched_tg_root_min_percent,
+						       root_task_group.tg_bandwidth.dl_period))
+				return -EINVAL;
+#endif
 		}
 
 		if (!tg_check_root_dl_bandwidth(d))
@@ -10918,6 +11021,13 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
 
 #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
 	if (tg == &root_task_group) {
+		int ret;
+
+		ret = tg_validate_root_min_bandwidth(sysctl_sched_tg_root_min_percent,
+						     period);
+		if (ret)
+			return ret;
+
 		tg_update_root_bandwidth(period);
 		return 0;
 	}
