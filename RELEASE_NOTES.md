@@ -1,92 +1,71 @@
-# TGBS v1.6 release notes
+# TGBS v1.7 release notes
 
-TGBS v1.6 adds per-CPU runtime overrides for task groups, derives the root
-server's residual budget independently on each CPU, and makes the root period
-configurable. It also fixes standard RT balancing being invoked on virtual
-runqueues.
+TGBS v1.7 restores the runtime guard for root servers at full CPU bandwidth,
+adds a configurable minimum root reservation, and documents TGBS in the
+kernel documentation. It retains the per-CPU runtime overrides and root
+period configuration introduced in v1.6.
 
-## Per-CPU runtime configuration
+## Root-server runtime guard
 
-- Expose `cpu.runtime_us` as a cgroup v2 flat-keyed file. Reads always include
-  `default RUNTIME`, followed by explicit `CPU RUNTIME` overrides.
-- On child cgroups, accept a scalar or `default RUNTIME` to change the default,
-  `CPU RUNTIME` to set an override, and `CPU default` to remove it. Values are
-  in microseconds, with one update per write. CPU keys are individual CPU IDs.
-- Preserve overrides when changing the default, or when CPUs become inactive
-  or leave the effective cpuset. Servers outside the active CPU mask receive
-  zero runtime without discarding their configured budgets.
-- Keep a common period across each task group's CPUs. Validate runtime changes
-  against per-CPU hierarchical and root-domain bandwidth constraints before
-  applying them, and include overrides in active-group decisions.
-- Read period, runtime, and active-mask state under the bandwidth lock so
-  scheduler readers see a consistent snapshot, including on 32-bit systems.
+With `CONFIG_ROOT_TG_BANDWIDTH_SERVER=y`, restore a guard when a root
+server's computed runtime equals its period. This avoids the degenerate
+100% CBS case, leaving slack for timer and accounting latency.
 
-The per-CPU budget idea and default/override model are adapted from Yuri
-Andriaccio's HCBS work. The corresponding patch credits him with
-`Based-on-a-patch-by: Yuri Andriaccio yurand2000@gmail.com`.
+Subtract 1 ms when the period exceeds 1 ms; for shorter periods, including
+exactly 1 ms, subtract 1 ns. Apply the guard to both the root's default
+runtime and its per-CPU residual runtimes whenever they equal the period.
+Budgets below a full period are unaffected.
 
-## Root-server budgets and period
+## Minimum root bandwidth
 
-With `CONFIG_ROOT_TG_BANDWIDTH_SERVER=y`:
+With root isolation enabled, preserve a minimum root reservation on every
+CPU:
 
-- Compute each root server's runtime from the global DEADLINE bandwidth limit
-  minus direct child reservations on that CPU. A heavily reserved CPU no
-  longer reduces the root budget on otherwise unreserved CPUs.
-- For example, two direct children reserving 65% and 30% only on CPU1 leave
-  approximately 5% for the root on CPU1 and 100% on an unreserved CPU0 with
-  the default global limit. Reported values may differ slightly because of
-  fixed-point rounding.
-- Expose the computed budgets through the read-only, flat-keyed
-  `cpu.runtime_us` file. Its `default` line is the budget allowed by the global
-  limit; CPU entries contain overrides for reduced residual budgets.
-- Allow writes to root `cpu.period_us`. Recompute per-CPU runtimes at the new
-  period while retaining the derived bandwidth proportions.
-- Serialize recalculation with bandwidth, hierarchy, CPU-mask, and global
-  limit updates. Release reservations before admitting increases, and reject
-  global limits below existing direct child reservations on any CPU.
-- Preserve `cpu.reclaim` and server reclaim flags across budget and period
-  changes. A zero residual budget disables the server, including when reclaim
-  is enabled.
+- Add `/proc/sys/kernel/sched_tg_root_min_percent`, exposed with
+  `CONFIG_SYSCTL`. The default is `5`; values range from `0` to `100`,
+  subject to admission constraints. Set `0` to disable the minimum.
+- Express the minimum as a percentage of one full CPU, independently of the
+  global DEADLINE bandwidth limit. The root still receives all residual
+  bandwidth after subtracting direct child reservations on each CPU.
+- Reject child reservation updates, global bandwidth changes, and root
+  period changes that would leave the root below its minimum. Validation
+  accounts for the runtime guard and fixed-point rounding.
+- Reject an increase of the minimum if existing reservations cannot satisfy
+  it. Serialize configuration updates and preserve settings on rejection.
 
-The v1.5 defaults remain: 100% global DEADLINE bandwidth and a disabled physical
-fair server when root isolation is configured. Root isolation remains optional
-and disabled by default.
+For example, with a 100% global limit and the default 5% root minimum,
+direct children can reserve approximately 95% on each CPU. With a 95%
+global limit, they can reserve approximately 90%. Exact admissible values
+depend on fixed-point rounding and the runtime guard.
 
-## Shared period validation
+## Kernel documentation
 
-Use a shared `dl_period_valid()` helper for DEADLINE tasks, fair servers, and
-TG servers. All use the bounds configured through
-`sched_deadline_period_min_us` and `sched_deadline_period_max_us`. TG period
-writes, including root writes, reject zero and out-of-range periods as well as
-values that overflow conversion from microseconds to nanoseconds.
+Add `Documentation/scheduler/sched-tgbs.rst`, covering the CBS reservation
+model, kernel configuration, cgroup v2 controls (`cpu.runtime_us`,
+`cpu.period_us`, and `cpu.reclaim`), per-CPU budgets, hierarchical admission
+control, reclaiming, and optional root servers.
 
-## RT balancing fix
-
-Keep standard RT push/pull balancing on physical runqueues. Do not queue its
-per-CPU balance callbacks on virtual runqueues, and skip direct standard
-push/pull attempts for them. Virtual runqueues retain the TGBS migration
-mechanisms.
-
-This fixes a possible recursive-locking warning when standard RT balancing
-attempts to acquire physical runqueue locks while the local physical lock is
-still held beneath a virtual runqueue lock. Root isolation makes this path
-visible during boot, but the correction also applies to child TG servers.
+Include configuration examples and tracing information. Link the page from
+the scheduler documentation index, the cgroup v2 CPU documentation, and
+the TGBS Kconfig help.
 
 ## Compatibility and upgrade
 
-This release targets the exact Linux v6.18 tag and retains the existing
-configuration constraints: TGBS requires `CGROUP_SCHED` and is incompatible
-with `RT_GROUP_SCHED`, `FAIR_GROUP_SCHED`, and `SCHED_CLASS_EXT`. Cpuset-driven
-placement requires `CONFIG_CPUSETS`. Root isolation requires
-`CONFIG_ROOT_TG_BANDWIDTH_SERVER`, which depends on `CONFIG_TG_BANDWIDTH_SERVER`.
+This release targets Linux `v6.18` and retains the existing configuration
+constraints: TGBS requires `CGROUP_SCHED` and is incompatible with
+`RT_GROUP_SCHED`, `FAIR_GROUP_SCHED`, and `SCHED_CLASS_EXT`. Cpuset-driven
+placement requires `CONFIG_CPUSETS`. Root isolation remains optional and
+disabled by default; `CONFIG_ROOT_TG_BANDWIDTH_SERVER` depends on
+`CONFIG_TG_BANDWIDTH_SERVER`.
 
-**The read format of `cpu.runtime_us` changes from a scalar to a flat-keyed
-file, even without per-CPU overrides.** Update readers and write-verification
-tools that expect a single integer. Scalar writes remain supported on child
-cgroups. Root runtime remains read-only, while root period is now writable.
+The cgroup control file formats remain unchanged from v1.6. With root
+isolation enabled, the new default 5% minimum can reject configurations
+previously admitted by v1.6. Adjust reservations or explicitly set
+`kernel.sched_tg_root_min_percent=0` to disable the minimum. The runtime
+guard still applies at full CPU bandwidth.
 
-The artifact contains a complete series of 31 patches, with fixes folded into
-the patches that introduced the affected functionality. Replace the previous
-series and apply v1.6 to a clean Linux v6.18 checkout; it is not an incremental
-patch set over v1.5. The patched kernel tag is `tgbs-v1.6`, and the artifact
-tag is `patch/tgbs-v1.6-k6.18`.
+The artifact contains a complete series of 33 patches, with fixes folded
+into the patches that introduced the affected functionality. Replace the
+previous series and apply v1.7 to a clean Linux v6.18 checkout; it is not
+an incremental patch set over v1.6. The patched kernel tag is `tgbs-v1.7`.
+The artifact tag for this release is `patch/tgbs-v1.7-k6.18`.

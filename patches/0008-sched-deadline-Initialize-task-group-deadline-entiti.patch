@@ -1,7 +1,7 @@
 From 19faffa0e94c0f030dc6d8e4a624bed1dd92b9fa Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Tue, 4 Nov 2025 11:13:32 +0100
-Subject: [PATCH 08/31] sched/deadline: Initialize task-group deadline entities
+Subject: [PATCH 08/33] sched/deadline: Initialize task-group deadline entities
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

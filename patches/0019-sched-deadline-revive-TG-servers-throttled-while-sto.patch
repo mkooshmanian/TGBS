@@ -1,7 +1,7 @@
 From 33368270aaf058a8af68e5dc74c839f2666502a7 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 30 Nov 2025 14:13:23 +0100
-Subject: [PATCH 19/31] sched/deadline: revive TG servers throttled while
+Subject: [PATCH 19/33] sched/deadline: revive TG servers throttled while
  stopped
 
 Handle TG server throttling after it was stopped because its vrq was empty.

@@ -1,7 +1,7 @@
 From f9ef7beec2b3379de99ef39c8866fd993d020745 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Mon, 8 Dec 2025 15:04:44 +0100
-Subject: [PATCH 12/31] sched/tg_server: keep virtual rq clock in sync with
+Subject: [PATCH 12/33] sched/tg_server: keep virtual rq clock in sync with
  physical rq
 
 The TG virtual runqueue reuses rq_clock_task(), but its clock never advanced

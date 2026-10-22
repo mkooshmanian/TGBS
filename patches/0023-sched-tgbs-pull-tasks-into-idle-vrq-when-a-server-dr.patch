@@ -1,7 +1,7 @@
 From a156d934cce8ab73f69de2292edf6033685a4d71 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 16 Nov 2025 14:24:31 +0100
-Subject: [PATCH 23/31] sched/tgbs: pull tasks into idle vrq when a server
+Subject: [PATCH 23/33] sched/tgbs: pull tasks into idle vrq when a server
  drains
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

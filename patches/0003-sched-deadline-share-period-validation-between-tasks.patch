@@ -1,7 +1,7 @@
 From 5bba315974fb6006a7c07b6936221b1963439b1e Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 18 Oct 2026 11:37:48 +0200
-Subject: [PATCH 03/31] sched/deadline: share period validation between tasks
+Subject: [PATCH 03/33] sched/deadline: share period validation between tasks
  and servers
 
 Extract the DEADLINE period bounds check into dl_period_valid() and use

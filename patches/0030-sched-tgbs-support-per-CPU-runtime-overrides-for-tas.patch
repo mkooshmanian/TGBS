@@ -1,7 +1,7 @@
-From d2eb46d95ef634c6438b6fba572695c2f67c24fd Mon Sep 17 00:00:00 2001
+From cfa9f01c5dfcb394ea2eb97c348a4d7cee78710c Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 18 Oct 2026 13:12:11 +0200
-Subject: [PATCH 30/31] sched/tgbs: support per-CPU runtime overrides for task
+Subject: [PATCH 30/33] sched/tgbs: support per-CPU runtime overrides for task
  groups
 
 Adapt Yuri Andriaccio's per-CPU bandwidth configuration work for HCBS
@@ -32,7 +32,7 @@ Based-on-a-patch-by: Yuri Andriaccio yurand2000@gmail.com
  3 files changed, 255 insertions(+), 72 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index e44ce6ce73d2..991561fdcaf3 100644
+index 30615586f255..eb52b2829e30 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9950,6 +9950,7 @@ struct tg_bandwidth_schedulable_data {
@@ -43,7 +43,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  	const struct cpumask *mask;
  };
  
-@@ -10003,20 +10004,31 @@ tg_schedulable_mask(const struct tg_bandwidth_schedulable_data *d,
+@@ -10024,20 +10025,31 @@ tg_schedulable_mask(const struct tg_bandwidth_schedulable_data *d,
  	return tg_active_mask(tg);
  }
  
@@ -83,7 +83,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  }
  
  static u64 tg_root_domain_server_bw(struct root_domain *rd)
-@@ -10089,17 +10101,10 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
+@@ -10110,17 +10122,10 @@ static int tg_check_root_dl_bandwidth(struct tg_bandwidth_schedulable_data *d)
  		dl_b = &rd->dl_bw;
  		cpus = tg_dl_bw_cpus(rd);
  		list_for_each_entry_rcu(child, &root_task_group.children, siblings) {
@@ -104,7 +104,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  		}
  		tg_bw = tg_root_domain_server_bw(rd);
  
-@@ -10185,7 +10190,9 @@ void tg_recalc_root_bandwidth(void)
+@@ -10206,7 +10211,9 @@ void tg_recalc_root_bandwidth(void)
  	if (!root_task_group.tg_server)
  		return;
  
@@ -112,10 +112,10 @@ index e44ce6ce73d2..991561fdcaf3 100644
 +	raw_spin_lock_irqsave(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
 +	period = root_task_group.tg_bandwidth.dl_period;
 +	raw_spin_unlock_irqrestore(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
- 	runtime = tg_root_bandwidth_runtime(period);
+ 	runtime = tg_root_residual_runtime(period);
  
  	raw_spin_lock_irqsave(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
-@@ -10401,18 +10408,31 @@ static void __init init_root_tg_bandwidth_server(void)
+@@ -10422,18 +10429,31 @@ static void __init init_root_tg_bandwidth_server(void)
  
  int alloc_tg_bandwidth_server(struct task_group *tg, struct task_group *parent)
  {
@@ -149,7 +149,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  	for_each_possible_cpu(cpu) {
  		struct sched_dl_entity *server;
-@@ -10463,9 +10483,14 @@ err_free:
+@@ -10484,9 +10504,14 @@ err_free:
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
  	free_cpumask_var(tg->active_server_mask);
@@ -164,7 +164,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  err_free_mask:
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
-@@ -10512,6 +10537,8 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -10533,6 +10558,8 @@ void free_tg_bandwidth_server(struct task_group *tg)
  	kfree(tg->tg_server);
  	tg->tg_server = NULL;
  	free_cpumask_var(tg->active_server_mask);
@@ -173,7 +173,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  }
  
  static DEFINE_MUTEX(tg_bandwidth_constraints_mutex);
-@@ -10519,7 +10546,8 @@ static DEFINE_MUTEX(tg_bandwidth_constraints_mutex);
+@@ -10540,7 +10567,8 @@ static DEFINE_MUTEX(tg_bandwidth_constraints_mutex);
  int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  {
  	cpumask_var_t active_mask;
@@ -183,7 +183,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  	int cpu;
  
  	if (!tg_uses_bandwidth_server(tg) ||
-@@ -10529,16 +10557,18 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+@@ -10550,16 +10578,18 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  	if (!zalloc_cpumask_var(&active_mask, GFP_KERNEL))
  		return -ENOMEM;
  
@@ -204,7 +204,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
  	if (tg == &root_task_group) {
-@@ -10547,11 +10577,11 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+@@ -10568,11 +10598,11 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  	}
  #endif
  
@@ -218,7 +218,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  		init_tg_dl_se(tg, cpu, cpu_runtime, period);
  	}
-@@ -10571,7 +10601,8 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -10592,7 +10622,8 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  	struct tg_bandwidth_schedulable_data *d = data;
  	struct task_group *child;
  	unsigned long total;
@@ -228,7 +228,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  	int cpu;
  
  	if (tg == &root_task_group) {
-@@ -10602,24 +10633,17 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -10623,24 +10654,17 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  		return 0;
  	}
  
@@ -261,7 +261,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  		total = tg_effective_bw_on_cpu(tg, cpu, period, runtime,
  					       tg_schedulable_mask(d, tg));
-@@ -10638,15 +10662,20 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
+@@ -10659,15 +10683,20 @@ static int tg_check_dl_bandwidth_constraints(struct task_group *tg, void *data)
  		}
  	}
  
@@ -283,7 +283,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  		.mask = tg_active_mask(tg),
  	};
  
-@@ -10654,12 +10683,16 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
+@@ -10675,12 +10704,16 @@ static int tg_validate_dl_bandwidth_tree(struct task_group *tg, u64 period, u64
  	return walk_tg_tree(tg_check_dl_bandwidth_constraints, tg_nop, &data);
  }
  
@@ -301,7 +301,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  	if (tg == &root_task_group)
  		return -EPERM;
  
-@@ -10670,22 +10703,24 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
+@@ -10691,22 +10724,24 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime)
  	if (period && runtime > period && runtime != RUNTIME_INF)
  		return -EINVAL;
  
@@ -330,7 +330,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  		init_tg_dl_se(tg, cpu, cpu_runtime, period);
  	}
-@@ -10735,27 +10770,55 @@ long sched_group_tg_reclaim(struct task_group *tg)
+@@ -10756,27 +10791,55 @@ long sched_group_tg_reclaim(struct task_group *tg)
  	return READ_ONCE(tg->tg_bandwidth.dl_reclaim);
  }
  
@@ -392,7 +392,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  	do_div(runtime, NSEC_PER_USEC);
  	return runtime;
-@@ -10772,12 +10835,12 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
+@@ -10793,12 +10856,12 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
  	if (!dl_period_valid(period))
  		return -EINVAL;
  
@@ -407,7 +407,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  		raw_spin_lock_irqsave(&tg->tg_bandwidth.dl_runtime_lock, flags);
  		tg->tg_bandwidth.dl_period = period;
  		raw_spin_unlock_irqrestore(&tg->tg_bandwidth.dl_runtime_lock, flags);
-@@ -10790,12 +10853,17 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
+@@ -10811,12 +10874,17 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
  
  	runtime = READ_ONCE(tg->tg_bandwidth.dl_runtime);
  
@@ -427,7 +427,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  	do_div(period, NSEC_PER_USEC);
  	return period;
-@@ -10895,8 +10963,7 @@ void sched_release_group(struct task_group *tg)
+@@ -10916,8 +10984,7 @@ void sched_release_group(struct task_group *tg)
  {
  	unsigned long flags;
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
@@ -437,7 +437,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  #endif
  
  	/*
-@@ -11113,17 +11180,88 @@ static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)
+@@ -11134,17 +11201,88 @@ static void cpu_cgroup_cancel_attach(struct cgroup_taskset *tset)
  }
  
  #ifdef CONFIG_TG_BANDWIDTH_SERVER
@@ -529,7 +529,7 @@ index e44ce6ce73d2..991561fdcaf3 100644
  
  static int cpu_tg_period_write_uint(struct cgroup_subsys_state *css,
  				    struct cftype *cftype, u64 rt_period_us)
-@@ -12056,8 +12194,8 @@ static struct cftype cpu_files[] = {
+@@ -12077,8 +12215,8 @@ static struct cftype cpu_files[] = {
  	{
  		.name = "runtime_us",
  		.flags = CFTYPE_NOT_ON_ROOT,

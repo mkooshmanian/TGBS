@@ -1,7 +1,7 @@
 From 6a605fb09ebf06d67cc0b2b7c735daec1655ee91 Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:50:29 +0100
-Subject: [PATCH 28/31] sched/tgbs: add runtime reclaim for task-group servers
+Subject: [PATCH 28/33] sched/tgbs: add runtime reclaim for task-group servers
 
 Add a cpu.reclaim cgroup knob for TG bandwidth servers and wire it to SCHED_FLAG_RECLAIM
 so task-group servers can reclaim spare bandwidth through the existing DL/GRUB logic on

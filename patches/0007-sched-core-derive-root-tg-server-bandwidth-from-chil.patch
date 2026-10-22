@@ -1,7 +1,7 @@
 From f23a20cfae7ff1559376042fbc0bf7ecfae8694e Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Wed, 29 Oct 2025 13:56:21 +0100
-Subject: [PATCH 07/31] sched/core: derive root tg server bandwidth from
+Subject: [PATCH 07/33] sched/core: derive root tg server bandwidth from
  children
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

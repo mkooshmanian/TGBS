@@ -1,7 +1,7 @@
 From 3586c1c57916b2d1ce290b2bf31d2135723bf27b Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Fri, 20 Mar 2026 08:48:50 +0100
-Subject: [PATCH 27/31] sched/deadline: account TG servers in root-domain
+Subject: [PATCH 27/33] sched/deadline: account TG servers in root-domain
  bandwidth
 
 Track task-group bandwidth servers in rd->dl_bw.total_bw so root-domain and

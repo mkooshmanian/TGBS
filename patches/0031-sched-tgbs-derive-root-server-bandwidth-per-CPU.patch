@@ -1,7 +1,7 @@
-From a0c4e8ba3f4e346c6508d9343ee1c81e69c98983 Mon Sep 17 00:00:00 2001
+From c23046665b44bf73fcf74286fce2066fe6e3fbaf Mon Sep 17 00:00:00 2001
 From: Merlin Kooshmanian <mkooshmanian@gmail.com>
 Date: Sun, 18 Oct 2026 14:27:12 +0200
-Subject: [PATCH 31/31] sched/tgbs: derive root server bandwidth per CPU
+Subject: [PATCH 31/33] sched/tgbs: derive root server bandwidth per CPU
 
 Derive each root server's budget from the global DEADLINE bandwidth
 limit minus direct child reservations on that CPU, instead of applying
@@ -23,7 +23,7 @@ Preserve cpu.reclaim and SCHED_FLAG_RECLAIM across updates.
  4 files changed, 145 insertions(+), 71 deletions(-)
 
 diff --git a/kernel/sched/core.c b/kernel/sched/core.c
-index 991561fdcaf3..b31624d7c404 100644
+index eb52b2829e30..9a23c95c0c63 100644
 --- a/kernel/sched/core.c
 +++ b/kernel/sched/core.c
 @@ -9686,7 +9686,6 @@ void __init sched_init(void)
@@ -43,7 +43,7 @@ index 991561fdcaf3..b31624d7c404 100644
  static u64 tg_bandwidth_visit_cookie;
  
  struct tg_bandwidth_schedulable_data {
-@@ -10140,72 +10141,118 @@ static bool tg_has_tasks(struct task_group *tg)
+@@ -10161,72 +10162,118 @@ static bool tg_has_tasks(struct task_group *tg)
  }
  
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
@@ -88,7 +88,7 @@ index 991561fdcaf3..b31624d7c404 100644
  	return sum;
  }
  
--static u64 tg_root_bandwidth_runtime(u64 period)
+-static u64 tg_root_residual_runtime(u64 period)
 +int tg_validate_root_bandwidth(void)
  {
  	unsigned long limit = tg_root_dl_bandwidth_limit();
@@ -96,7 +96,7 @@ index 991561fdcaf3..b31624d7c404 100644
 -	unsigned long residual = limit > used ? limit - used : 0;
 +	int cpu, ret = 0;
  
--	return div64_u64((u64)residual * period, BW_UNIT);
+-	return tg_root_bandwidth_runtime(period, residual);
 +	lockdep_assert_held(&tg_bandwidth_constraints_mutex);
 +	rcu_read_lock();
 +	for_each_possible_cpu(cpu) {
@@ -118,7 +118,7 @@ index 991561fdcaf3..b31624d7c404 100644
 +	struct task_group *tg = &root_task_group;
 +	unsigned long limit = tg_root_dl_bandwidth_limit();
  	unsigned long flags;
-+	u64 default_runtime = div64_u64((u64)limit * period, BW_UNIT);
++	u64 default_runtime = tg_root_bandwidth_runtime(period, limit);
  	int cpu;
  
 -	if (!root_task_group.tg_server)
@@ -132,14 +132,11 @@ index 991561fdcaf3..b31624d7c404 100644
 -	raw_spin_lock_irqsave(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
 -	period = root_task_group.tg_bandwidth.dl_period;
 -	raw_spin_unlock_irqrestore(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
--	runtime = tg_root_bandwidth_runtime(period);
-+		root_cpu_runtime[cpu] = div64_u64((u64)residual * period, BW_UNIT);
+-	runtime = tg_root_residual_runtime(period);
++		root_cpu_runtime[cpu] = tg_root_bandwidth_runtime(period, residual);
 +	}
 +	rcu_read_unlock();
- 
--	raw_spin_lock_irqsave(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
--	root_task_group.tg_bandwidth.dl_runtime = runtime;
--	raw_spin_unlock_irqrestore(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
++
 +	raw_spin_lock_irqsave(&tg->tg_bandwidth.dl_runtime_lock, flags);
 +	tg->tg_bandwidth.dl_period = period;
 +	tg->tg_bandwidth.dl_runtime = default_runtime;
@@ -148,7 +145,10 @@ index 991561fdcaf3..b31624d7c404 100644
 +			RUNTIME_INF : root_cpu_runtime[cpu];
 +	raw_spin_unlock_irqrestore(&tg->tg_bandwidth.dl_runtime_lock, flags);
 +}
-+
+ 
+-	raw_spin_lock_irqsave(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
+-	root_task_group.tg_bandwidth.dl_runtime = runtime;
+-	raw_spin_unlock_irqrestore(&root_task_group.tg_bandwidth.dl_runtime_lock, flags);
 +/* Release bandwidth before admitting increases in the same transaction. */
 +static void tg_apply_root_bandwidth(bool grow)
 +{
@@ -162,13 +162,13 @@ index 991561fdcaf3..b31624d7c404 100644
 +		struct tg_cpu_bandwidth bandwidth = tg_cpu_bandwidth_read(tg, cpu);
 +		u64 runtime = bandwidth.active ? bandwidth.runtime : 0;
 +		u64 bw = to_ratio(bandwidth.period, runtime);
-+
+ 
+-		init_tg_dl_se(&root_task_group, cpu, cpu_runtime, period);
 +		if (grow != (bw > server->dl_bw))
 +			continue;
 +		if (runtime == server->dl_runtime && bandwidth.period == server->dl_period)
 +			continue;
- 
--		init_tg_dl_se(&root_task_group, cpu, cpu_runtime, period);
++
 +		/* init_tg_dl_se() retains SCHED_FLAG_RECLAIM. */
 +		init_tg_dl_se(tg, cpu, runtime, bandwidth.period);
  	}
@@ -199,7 +199,7 @@ index 991561fdcaf3..b31624d7c404 100644
  #endif
  
  static struct task_struct *
-@@ -10374,6 +10421,14 @@ static void __init init_root_tg_bandwidth_server(void)
+@@ -10395,6 +10442,14 @@ static void __init init_root_tg_bandwidth_server(void)
  {
  	int cpu;
  
@@ -214,7 +214,7 @@ index 991561fdcaf3..b31624d7c404 100644
  	/*
  	 * Prepare every possible CPU before the first task placement. Creating
  	 * a server later would leave existing tasks pointing at physical queues.
-@@ -10403,6 +10458,9 @@ static void __init init_root_tg_bandwidth_server(void)
+@@ -10424,6 +10479,9 @@ static void __init init_root_tg_bandwidth_server(void)
  		dl_server_init(server, rq, tg_bandwidth_server_pick_task);
  		init_tg_bandwidth_entry(&root_task_group, vrq, server, cpu, NULL);
  	}
@@ -224,7 +224,7 @@ index 991561fdcaf3..b31624d7c404 100644
  }
  #endif
  
-@@ -10541,7 +10599,6 @@ void free_tg_bandwidth_server(struct task_group *tg)
+@@ -10562,7 +10620,6 @@ void free_tg_bandwidth_server(struct task_group *tg)
  	tg->tg_runtime_overrides = NULL;
  }
  
@@ -232,7 +232,7 @@ index 991561fdcaf3..b31624d7c404 100644
  
  int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  {
-@@ -10579,6 +10636,13 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+@@ -10600,6 +10657,13 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  
  	period = READ_ONCE(tg->tg_bandwidth.dl_period);
  
@@ -246,7 +246,7 @@ index 991561fdcaf3..b31624d7c404 100644
  	for_each_possible_cpu(cpu) {
  		u64 cpu_runtime = tg_server_cpu_active(tg, cpu) ?
  			tg_cpu_runtime(tg, cpu) : 0;
-@@ -10588,7 +10652,7 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
+@@ -10609,7 +10673,7 @@ int tg_group_set_active_mask(struct task_group *tg, const struct cpumask *mask)
  
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
  	if (tg->parent == &root_task_group)
@@ -255,7 +255,7 @@ index 991561fdcaf3..b31624d7c404 100644
  #endif
  
  out_free:
-@@ -10718,6 +10782,13 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime,
+@@ -10739,6 +10803,13 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime,
  	if (tg == &root_task_group)
  		return 0;
  
@@ -269,7 +269,7 @@ index 991561fdcaf3..b31624d7c404 100644
  	for_each_possible_cpu(cpu) {
  		u64 cpu_runtime = tg_server_cpu_active(tg, cpu) ?
  			tg_cpu_runtime(tg, cpu) : 0;
-@@ -10727,7 +10798,7 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime,
+@@ -10748,7 +10819,7 @@ static int tg_set_dl_bandwidth(struct task_group *tg, u64 period, u64 runtime,
  
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
  	if (tg->parent == &root_task_group)
@@ -278,7 +278,7 @@ index 991561fdcaf3..b31624d7c404 100644
  #endif
  
  	return ret;
-@@ -10811,19 +10882,6 @@ int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us)
+@@ -10832,19 +10903,6 @@ int sched_group_set_tg_runtime(struct task_group *tg, long runtime_us)
  	return tg_set_runtime(tg, -1, runtime_us, false);
  }
  
@@ -298,7 +298,7 @@ index 991561fdcaf3..b31624d7c404 100644
  int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
  {
  	u64 period, runtime;
-@@ -10839,14 +10897,7 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
+@@ -10860,14 +10918,7 @@ int sched_group_set_tg_period(struct task_group *tg, u64 period_us)
  
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
  	if (tg == &root_task_group) {
@@ -314,7 +314,7 @@ index 991561fdcaf3..b31624d7c404 100644
  		return 0;
  	}
  #endif
-@@ -10927,6 +10978,10 @@ void sched_online_group(struct task_group *tg, struct task_group *parent)
+@@ -10948,6 +10999,10 @@ void sched_online_group(struct task_group *tg, struct task_group *parent)
  {
  	unsigned long flags;
  
@@ -325,7 +325,7 @@ index 991561fdcaf3..b31624d7c404 100644
  	spin_lock_irqsave(&task_group_lock, flags);
  	list_add_tail_rcu(&tg->list, &task_groups);
  
-@@ -10964,6 +11019,18 @@ void sched_release_group(struct task_group *tg)
+@@ -10985,6 +11040,18 @@ void sched_release_group(struct task_group *tg)
  	unsigned long flags;
  #ifdef CONFIG_ROOT_TG_BANDWIDTH_SERVER
  	bool update_root = tg->parent == &root_task_group;
@@ -344,7 +344,7 @@ index 991561fdcaf3..b31624d7c404 100644
  #endif
  
  	/*
-@@ -11255,13 +11322,6 @@ static int cpu_tg_runtime_show(struct seq_file *sf, void *v)
+@@ -11276,13 +11343,6 @@ static int cpu_tg_runtime_show(struct seq_file *sf, void *v)
  	return 0;
  }
  
@@ -358,7 +358,7 @@ index 991561fdcaf3..b31624d7c404 100644
  
  static int cpu_tg_period_write_uint(struct cgroup_subsys_state *css,
  				    struct cftype *cftype, u64 rt_period_us)
-@@ -12213,7 +12273,7 @@ static struct cftype cpu_files[] = {
+@@ -12234,7 +12294,7 @@ static struct cftype cpu_files[] = {
  	{
  		.name = "runtime_us",
  		.flags = CFTYPE_ONLY_ON_ROOT,
