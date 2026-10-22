@@ -26,8 +26,7 @@ The implementation provides:
 * multicore placement and balancing of TGBS virtual runqueues;
 * cpuset-aware server activation and task placement;
 * optional runtime reclaim through the Linux GRUB mechanism;
-* optional temporal isolation of workloads running in the root CPU cgroup,
-  with per-CPU residual budgets and a configurable period.
+* optional temporal isolation of workloads running in the root CPU cgroup, with per-CPU residual budgets, a configurable period, and a configurable minimum reservation (5% per CPU by default).
 
 Scheduling inside a TGBS group continues to rely on the native Linux scheduling classes. TGBS therefore isolates bandwidth at the task-group level without requiring one container per scheduling policy.
 
@@ -135,6 +134,7 @@ Current released artifacts include:
 | v1.4         | v6.18             | `patch/tgbs-v1.4-k6.18` |
 | v1.5         | v6.18             | `patch/tgbs-v1.5-k6.18` |
 | v1.6         | v6.18             | `patch/tgbs-v1.6-k6.18` |
+| v1.7         | v6.18             | `patch/tgbs-v1.7-k6.18` |
 
 A release archive contains the patch series and the metadata needed to understand and cite the corresponding artifact.
 
@@ -154,7 +154,7 @@ For reproducibility, when referring to experiments performed with a specific TGB
 
 TGBS is distributed under the **GNU General Public License version 2 only** (`GPL-2.0-only`).
 
-See [`LICENSE`](LICENSE) for the full license text.
+See [`LICENCE`](LICENCE) for the full license text.
 
 ## Use of Generative AI Tools
 
